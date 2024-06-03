@@ -1,4 +1,6 @@
 import os
+import glob
+import fnmatch
 import tifffile
 import joblib
 import pandas as pd
@@ -124,6 +126,37 @@ class StandardAnalysis:
         self.reference_channel = reference_channel
         self.align_frames = align_frames
         self.method = method
+
+    def get_files(self, input_path: str, output_folder: str, file_list: str = None, pattern: str = None, no_reanalyse: bool = True) -> List[str]:
+        """
+        Retrieve a list of files from the specified input path, filtered by pattern and extension.
+        If the csv are already present, files can be filtered out. 
+        Returns the list of file to be processed.
+        """
+        if pattern is None:
+            pattern = ""
+        combined_pattern=f"{pattern}*{self.file_type}"
+        if os.path.isdir(input_path) and file_list is None:
+            file_list = glob.glob(os.path.join(input_path, combined_pattern))
+        elif isinstance(file_list, str) and file_list.endswith(".txt") and os.path.exists(file_list):
+            with open(file_list, "r") as file:
+                file_list = [line.rstrip() for line in file if fnmatch.fnmatch(line.rstrip(), combined_pattern)]
+        elif isinstance(file_list, list):
+            file_list = [file for file in file_list if fnmatch.fnmatch(file, combined_pattern)]
+        else:
+            raise ValueError("Invalid input path. It should be a directory, a .txt file, or a list of files.")
+        # Remove files that have already been analysed
+        if no_reanalyse:
+            for file_i in file_list:
+                full_path=os.path.join(output_folder, os.path.splitext(file_i)[0])
+                if all(
+                    os.path.exists(full_path + ext)
+                    for ext in ["_morpho.csv", "_fl.csv"]
+                ):
+                    file_list.remove(file_i)
+                    self.main_logger.info(f"File {file_i} already analysed. Skipping.")
+        
+        return [os.path.basename(file_i) for file_i in file_list]
 
     def analyse_image(
         self,
@@ -276,20 +309,24 @@ class StandardAnalysis:
             "min_intensity",
             "mean_intensity",
         ]
+        img_logger.info("Extracting morphological measurements")
         morpho_measurements = img_analyser.get_roi_measurements(
             target_channel=0,
             properties=morphology_prop,
             extra_properties=(roi_skewness, roi_std_dev, rod_shape_coef),
             asses_focus=True,
         )
+        img_logger.info("Extracting fluorescent measurements")
         fl_measurements = img_analyser.get_roi_measurements(
             target_channel=1,
             properties=fl_prop,
             extra_properties=(roi_skewness, roi_std_dev),
             asses_focus=False,
         )
+        img_logger.info("Extracting time data")
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
+        img_logger.info("Extracting background fluorescence intensity")
         bck_fl = measure_background_intensity(ip.img_original, channel=1)
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
         morpho_measurements = pd.merge(
@@ -335,18 +372,14 @@ class StandardAnalysis:
     def process_folder(
         self,
         files_pattern: Optional[str] = None,
+        file_list: Optional[str] = None,
         export_labeled_mask: bool = False,
         export_aligned_image: bool = False,
     ) -> None:
         """Process all files with the matching pattern and file extension in the input folder."""
 
         self.main_logger.info(f"Processing folder: {self.input_path}")
-        file_list = []
-        for i in os.listdir(self.input_path):
-            if (files_pattern is None or files_pattern in i) and i.endswith(
-                self.file_type
-            ):
-                file_list.append(i)
+        file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
         )
@@ -368,17 +401,13 @@ class StandardAnalysis:
     def process_folder_parallel(
         self,
         files_pattern: Optional[str] = None,
+        file_list: Optional[str] = None,
         export_labeled_mask: bool = True,
         export_aligned_image: bool = True,
         max_workers: Optional[int] = None,
     ) -> None:
         """Process all files in the input folder using parallel processing."""
-        file_list = []
-        for i in os.listdir(self.input_path):
-            if (files_pattern is None or files_pattern in i) and i.endswith(
-                self.file_type
-            ):
-                file_list.append(i)
+        file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
         )
