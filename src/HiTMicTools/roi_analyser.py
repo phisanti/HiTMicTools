@@ -108,12 +108,12 @@ def roi_skewness(regionmask, intensity):
     """
     roi_intensities = intensity[regionmask]
 
-    # Check if there are enough unique values in roi_intensities
-    unique_values = np.unique(roi_intensities)
-    if len(unique_values) < 3:
-        return 0
-
     try:
+        # Check if there are enough unique values in roi_intensities
+        unique_values = np.unique(roi_intensities)
+        if len(unique_values) < 10:
+            return 0
+
         return skew(roi_intensities, bias=False)
     except Exception:
         return 0

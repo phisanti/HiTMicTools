@@ -1,8 +1,8 @@
 import torch
 import gc
-from typing import Any, Tuple, Optional
-import numpy as np
 import cv2
+import numpy as np
+from typing import Any, Tuple, Optional
 from monai.inferers import SlidingWindowInferer
 
 
