@@ -413,7 +413,7 @@ class StandardAnalysis:
         )
 
         total_cpu_threads = os.cpu_count()
-        if max_workers is None:
+        if max_workers is None or max_workers == 0:
             max_workers = int(total_cpu_threads // 2)
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {max_workers}")
