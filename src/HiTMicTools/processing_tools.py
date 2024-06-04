@@ -51,7 +51,7 @@ class ImagePreprocessor:
             self.nchannels = metadata["nchannels"]
 
     def align_image(
-        self, nchannel: int, nslices: int, crop_image: bool = True, **kwargs
+        self, nchannel: int, nslices: int, compres_align: float = 0, crop_image: bool = True, **kwargs
     ) -> None:
         """
         Align the image using a reference channel.
@@ -59,14 +59,28 @@ class ImagePreprocessor:
         Args:
             nchannel (int): Reference channel index.
             nslices (int): Reference slice index.
+            compres_align (float, default=0): Compression ratio to crop image for alignment. Speed up
+            alignment for very large images and long stacks.
             crop_image (bool, default=True): Whether to crop the black region after alignment.
             **kwargs: Additional keyword arguments for StackReg.
 
         Returns:
             None
         """
+        # check that compress_align is between 0-1
+        assert compres_align >= 0 and compres_align <= 1, "compress_align must be between 0 and 1"           
+
         # Align with reference channel
         reference_channel = self.img[:, nslices, nchannel, :, :]
+
+        if compres_align > 0:
+            b, h, w = reference_channel.shape
+            h_start = int(h * compres_align/2)
+            w_start = int(w * compres_align/2)
+            h_end = h - h_start
+            w_end = w - w_start
+            reference_channel = reference_channel[:, h_start:h_end, w_start:w_end]
+
         sr = StackReg(StackReg.TRANSLATION)
         self.tmats = sr.register_stack(reference_channel, **kwargs)
 
