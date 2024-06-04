@@ -363,7 +363,8 @@ class StandardAnalysis:
             pmap_8bit = convert_image(img_analyser.proba_map, np.uint8)
             tifffile.imwrite(export_path + "_labels.tiff", pmap_8bit)
         if export_aligned_image:
-            tifffile.imwrite(export_path + "_transformed.tiff", ip.img, imagej=True)
+            image_8bit = convert_image(ip.img, np.uint8)
+            tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
 
         img_logger.info(f"Analysis completed for {movie_name}")
         self.remove_logger(img_logger)
