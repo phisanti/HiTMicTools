@@ -149,6 +149,7 @@ class BasePipeline:
         file_list: Optional[str] = None,
         export_labeled_mask: bool = False,
         export_aligned_image: bool = False,
+        **kwargs,
     ) -> None:
         """Process all files with the matching pattern and file extension in the input folder."""
 
@@ -170,6 +171,7 @@ class BasePipeline:
                 name,
                 export_labeled_mask=export_labeled_mask,
                 export_aligned_image=export_aligned_image,
+                **kwargs,
             )
 
     def process_folder_parallel(
@@ -179,6 +181,7 @@ class BasePipeline:
         export_labeled_mask: bool = True,
         export_aligned_image: bool = True,
         max_workers: Optional[int] = None,
+        **kwargs, 
     ) -> None:
         """Process all files in the input folder using parallel processing."""
         file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
@@ -205,6 +208,7 @@ class BasePipeline:
                     name,
                     export_labeled_mask,
                     export_aligned_image,
+                    **kwargs,
                 )
                 futures.append(future)
 

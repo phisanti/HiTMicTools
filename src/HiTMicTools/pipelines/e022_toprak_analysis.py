@@ -25,9 +25,10 @@ class analysis_e022_sttl(BasePipeline):
         self,
         file_i: str,
         name: str,
-        subset_img='half',
         export_labeled_mask: bool = True,
         export_aligned_image: bool = True,
+        subset_img='test',
+
     ) -> None:
         """Pipeline analysis for each image."""
 
