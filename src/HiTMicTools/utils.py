@@ -130,17 +130,47 @@ def get_bit_depth(img: np.ndarray) -> int:
     return bit_depth
 
 
-def convert_image(img: np.ndarray, dtype: np.dtype) -> np.ndarray:
-    """Convert an image to the specified data type."""
-
-    # Scale image to [0, 1]
+def convert_image(img: np.ndarray, dtype: np.dtype, scale_mode: str = 'channel') -> np.ndarray:
+    """
+    Convert an image to the specified data type with optional re-scaling.
+    
+    Args:
+        img (np.ndarray): Input image array.
+        dtype (np.dtype): Target data type for conversion.
+        scale_mode (str, optional): Method for scaling the image. Defaults to 'channel'.
+    
+    Returns:
+        np.ndarray: Converted image array.
+    
+    scale_mode options:
+    - 'global': Scale entire image
+    - 'channel': Scale each channel independently (default)
+    - 'frame': Scale each frame independently
+    - 'channel_frame': Scale each channel and frame independently
+    """
+    
+    def scale_array(arr):
+        return (arr - arr.min()) / (arr.max() - arr.min())
+    
+    # Scale image to [0, 1] based on scale_mode
     if img.dtype == np.uint8 or img.dtype == np.uint16:
         img = img.astype(np.float32)
-        img_shifted = img - np.min(img)
-        img_scaled = img_shifted / np.max(img_shifted)
     else:
         img_scaled = img
 
+    if scale_mode == 'global':
+        img_scaled = scale_array(img)
+    elif scale_mode == 'channel':
+        img_scaled = np.stack([scale_array(img[:, :, c]) for c in range(img.shape[2])], axis=2)
+    elif scale_mode == 'frame':
+        img_scaled = np.stack([scale_array(img[t]) for t in range(img.shape[0])], axis=0)
+    elif scale_mode == 'channel_frame':
+        img_scaled = np.stack([[scale_array(img[t, :, c]) for c in range(img.shape[2])] 
+                                for t in range(img.shape[0])], axis=(0, 2))
+    else:
+        raise ValueError(f"Unsupported scale mode: {scale_mode}")
+
+    print(scale_mode)
     # Convert image to the target data type
     if dtype == np.uint8:
         img_converted = (img_scaled * 255).astype(np.uint8)
