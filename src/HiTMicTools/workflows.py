@@ -115,8 +115,21 @@ class BasePipeline:
     def get_files(self, input_path: str, output_folder: str, file_list: str = None, pattern: str = None, no_reanalyse: bool = True) -> List[str]:
         """
         Retrieve a list of files from the specified input path, filtered by pattern and extension.
-        If the csv are already present, files can be filtered out. 
-        Returns the list of file to be processed.
+
+        Args:
+            input_path (str): Path to the directory containing input files.
+            output_folder (str): Path to the directory where output files will be saved.
+            file_list (str, optional): Path to a text file containing a list of input files. Defaults to None.
+            pattern (str, optional): File name pattern to match. Defaults to None.
+            no_reanalyse (bool): If True, skip files that have already been analyzed. Defaults to True.
+
+        Returns:
+            List[str]: List of file names to be processed.
+
+        Notes:
+            - If file_list is provided, it takes precedence over input_path.
+            - If no_reanalyse is True, files with existing output will be excluded from the returned list.
+            - The method supports input as a directory, a text file with file paths, or a list of files.
         """
         if pattern is None:
             pattern = ""
@@ -130,6 +143,7 @@ class BasePipeline:
             file_list = [file for file in file_list if fnmatch.fnmatch(file, combined_pattern)]
         else:
             raise ValueError("Invalid input path. It should be a directory, a .txt file, or a list of files.")
+        
         # Remove files that have already been analysed
         if no_reanalyse:
             for file_i in file_list:
@@ -141,7 +155,8 @@ class BasePipeline:
                     file_list.remove(file_i)
                     self.main_logger.info(f"File {file_i} already analysed. Skipping.")
         
-        return [os.path.basename(file_i) for file_i in file_list]
+        file_list = [os.path.basename(file_i) for file_i in file_list]
+        return file_list
 
     def process_folder(
         self,
@@ -151,8 +166,24 @@ class BasePipeline:
         export_aligned_image: bool = False,
         **kwargs,
     ) -> None:
-        """Process all files with the matching pattern and file extension in the input folder."""
+        """
+        Process all files with the matching pattern and file extension in the input folder.
 
+        Args:
+            files_pattern (str, optional): Glob pattern to match image files. Defaults to None.
+            file_list (str, optional): Path to a text file containing image file paths. Defaults to None.
+            export_labeled_mask (bool): Whether to export labeled mask images. Defaults to False.
+            export_aligned_image (bool): Whether to export aligned images. Defaults to False.
+            **kwargs: Additional keyword arguments to pass to the analyse_image method.
+
+        Returns:
+            None
+
+        Notes:
+            - Either files_pattern or file_list must be provided.
+            - This method processes files sequentially, unlike process_folder_parallel.
+            - The method will analyze each image file using the analyse_image method.
+        """
         self.main_logger.info(f"Processing folder: {self.input_path}")
         file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
         self.main_logger.info(
@@ -180,22 +211,41 @@ class BasePipeline:
         file_list: Optional[str] = None,
         export_labeled_mask: bool = True,
         export_aligned_image: bool = True,
-        max_workers: Optional[int] = None,
+        num_workers: Optional[int] = None,
         **kwargs, 
     ) -> None:
-        """Process all files in the input folder using parallel processing."""
+        """
+        Process multiple image files in parallel using multiprocessing.
+
+        Args:
+            files_pattern (str, optional): Glob pattern to match image files. Defaults to None.
+            file_list (str, optional): Path to a text file containing image file paths. Defaults to None.
+            export_labeled_mask (bool): Whether to export labeled mask images. Defaults to True.
+            export_aligned_image (bool): Whether to export aligned images. Defaults to True.
+            num_workers (int, optional): Maximum number of worker processes. Defaults to None.
+            **kwargs: Additional keyword arguments to pass to the analyse_image method.
+
+        Returns:
+            None
+
+        Notes:
+            - Either files_pattern or file_list must be provided.
+            - If num_workers is None, it defaults to the number of CPU cores.
+            - This method uses multiprocessing to analyze multiple images in parallel.
+        """
+
         file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
         )
 
         total_cpu_threads = os.cpu_count()
-        if max_workers is None or max_workers == 0:
-            max_workers = int(total_cpu_threads // 2)
+        if num_workers is None or num_workers == 0:
+            num_workers = int(total_cpu_threads // 2)
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
-        self.main_logger.info(f"Number of threads used: {max_workers}")
+        self.main_logger.info(f"Number of threads used: {num_workers}")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = []
             for index, name in enumerate(file_list, start=1):
                 file_i = os.path.join(self.input_path, name)
