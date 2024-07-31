@@ -3,10 +3,10 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from monai.networks.nets import UNet as monai_unet
-from HiTMicTools.workflows import StandardAnalysis
 from HiTMicTools.utils import read_metadata
 from HiTMicTools.confreader import ConfReader
-
+from HiTMicTools.pipelines.StandardAnalysis import StandardAnalysis
+from HiTMicTools.pipelines.e022_toprak_analysis import analysis_e022_sttl
 
 if len(sys.argv) < 2:
     print("Please pass the YAML configuration file as main.py /path/to/config.yml.")
@@ -16,6 +16,9 @@ if len(sys.argv) < 2:
 config_file_path = sys.argv[1]
 c_reader = ConfReader(config_file_path)
 configs = c_reader.opt
+extra_args = configs.get("extra", {})
+num_workers = configs.pipeline_setup.get("num_workers", {})
+
 configs
 
 # Allow to dynamically override the input folder (useful for SLURM jobs)
@@ -38,7 +41,14 @@ seg_params = {
 }
 
 # Instantiate analysis workflow
-analysis_wf = StandardAnalysis(
+pipeline_map = {
+    "standard": StandardAnalysis,
+    "e022_toprak": analysis_e022_sttl,
+}
+
+pipeline_name = configs.pipeline_setup["name"]
+analysis_pipeline = pipeline_map.get(pipeline_name)
+analysis_wf = analysis_pipeline(
     configs.input_data["input_folder"],
     configs.input_data["output_folder"],
     image_classifier_args=seg_params,
@@ -49,18 +59,20 @@ analysis_wf = StandardAnalysis(
 
 # Config image analysis
 analysis_wf.config_image_analysis(
-    reference_channel=configs.pre_processing["reference_channel"],
-    align_frames=configs.pre_processing["align_frames"],
-    method=configs.pre_processing["method_clear_background"],
+    reference_channel=configs.pipeline_setup["reference_channel"],
+    align_frames=configs.pipeline_setup["align_frames"],
+    method=configs.pipeline_setup["method_clear_background"],
 )
 
 # Start folder processing
-if configs.input_data["parallel_processing"]:
+if configs.pipeline_setup["parallel_processing"]:
     analysis_wf.process_folder_parallel(
         files_pattern=configs.input_data["file_pattern"],
         file_list=configs.input_data["file_list"],
         export_labeled_mask=True,
         export_aligned_image=True,
+        num_workers=num_workers,
+        **extra_args,
     )
 else:
     analysis_wf.process_folder(
@@ -68,4 +80,5 @@ else:
         file_list=configs.input_data["file_list"],
         export_labeled_mask=True,
         export_aligned_image=True,
+        **extra_args,
     )
