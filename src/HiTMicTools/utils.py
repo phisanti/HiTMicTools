@@ -170,7 +170,6 @@ def convert_image(img: np.ndarray, dtype: np.dtype, scale_mode: str = 'channel')
     else:
         raise ValueError(f"Unsupported scale mode: {scale_mode}")
 
-    print(scale_mode)
     # Convert image to the target data type
     if dtype == np.uint8:
         img_converted = (img_scaled * 255).astype(np.uint8)
