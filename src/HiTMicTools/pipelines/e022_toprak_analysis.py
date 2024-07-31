@@ -147,7 +147,7 @@ class analysis_e022_sttl(BasePipeline):
         # 2.4 Remove orignal image (not used after background corr) to save mem 
         img_logger.info("Extracting background fluorescence intensity")
         bck_fl = measure_background_intensity(ip.img_original, channel=1)
-        ip.img_original=np.zeros((1, 1, 1, 1))
+        ip.img_original=np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment
         img_logger.info(f"3.1 - Starting segmentation")
@@ -213,7 +213,7 @@ class analysis_e022_sttl(BasePipeline):
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
         img_logger.info("Extracting background fluorescence intensity")
-        bck_fl = measure_background_intensity(ip.img_original, channel=1)
+        #bck_fl = measure_background_intensity(ip.img_original, channel=1)
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
         morpho_measurements = pd.merge(
             morpho_measurements, time_data, on="frame", how="left"
