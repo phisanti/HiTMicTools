@@ -262,6 +262,12 @@ def read_metadata(metadata_file: str) -> Dict[str, Any]:
     return metadata
 
 
+def get_memory_usage():
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    return f"{memory_info.rss / (1024 * 1024):.2f} MB"
+
+
 def get_system_info():
     cpu_percent = psutil.cpu_percent()
     memory = psutil.virtual_memory()

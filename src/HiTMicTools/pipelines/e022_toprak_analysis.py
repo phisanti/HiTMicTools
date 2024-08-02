@@ -14,14 +14,11 @@ from HiTMicTools.utils import (
     get_timestamps,
     measure_background_intensity,
     convert_image,
+    get_memory_usage
 )
 from jetraw_tools.image_reader import ImageReader
 import psutil
 
-def get_memory_usage():
-    process = psutil.Process()
-    memory_info = process.memory_info()
-    return f"{memory_info.rss / (1024 * 1024):.2f} MB"
 
 class analysis_e022_sttl(BasePipeline):
     def analyse_image(
