@@ -16,9 +16,12 @@ from HiTMicTools.utils import (
     convert_image,
 )
 from jetraw_tools.image_reader import ImageReader
+import psutil
 
-
-
+def get_memory_usage():
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    return f"{memory_info.rss / (1024 * 1024):.2f} MB"
 
 class analysis_e022_sttl(BasePipeline):
     def analyse_image(
@@ -41,7 +44,7 @@ class analysis_e022_sttl(BasePipeline):
         align_frames = self.align_frames
         method = self.method
 
-        img_logger.info(f"1 - Reading image")
+        img_logger.info(f"1 - Reading image, Memory:{get_memory_usage()}")
         image_reader = ImageReader(file_i, self.file_type)
         img, metadata = image_reader.read_image()
         name = os.path.splitext(name)[0]
@@ -67,7 +70,7 @@ class analysis_e022_sttl(BasePipeline):
         img=np.zeros((1, 1, 1, 1)) # Remove img to save memory
 
         # 2.1 Remove background
-        img_logger.info(f"2.1 - Preprocessing image")
+        img_logger.info(f"2.1 - Preprocessing image, Memory:{get_memory_usage()}")
         img_logger.info(f"Image shape {ip.img.shape}")
         mean_intensity_0 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
         img_logger.info(
@@ -127,7 +130,7 @@ class analysis_e022_sttl(BasePipeline):
             raise ValueError(f"Invalid method: {method}")
 
         # 2.2 Normalize image intensity in the reference channel
-        img_logger.info(f"2.2 - Preprocessing image")
+        img_logger.info(f"2.2 - Preprocessing image, Memory:{get_memory_usage()}")
         mean_intensity_1 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
         img_logger.info(
             f"Intensity before normalization:\n{np.round(mean_intensity_1, 3)}"
@@ -140,9 +143,9 @@ class analysis_e022_sttl(BasePipeline):
 
         # 2.3 Align frames if required
         if align_frames:
-            img_logger.info(f"2.3 - Aligning frames in the stack")
+            img_logger.info(f"2.3 - Aligning frames in the stack, Memory:{get_memory_usage()}")
             ip.align_image(0, 0, compres_align=.5, crop_image=False, reference="previous")
-            img_logger.info(f"2.3 - Alignment completed!")
+            img_logger.info(f"2.3 - Alignment completed! Memory:{get_memory_usage()}")
         
         # 2.4 Remove orignal image (not used after background corr) to save mem 
         img_logger.info("Extracting background fluorescence intensity")
@@ -150,11 +153,11 @@ class analysis_e022_sttl(BasePipeline):
         ip.img_original=np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment
-        img_logger.info(f"3.1 - Starting segmentation")
+        img_logger.info(f"3.1 - Starting segmentation, Memory:{get_memory_usage()}")
         prob_map = self.image_classifier_args.predict(
             ip.img[:, 0, reference_channel, :, :]
         )
-        img_logger.info(f"3.1 - Segmentation completed!")
+        img_logger.info(f"3.1 - Segmentation completed! Memory:{get_memory_usage()}")
 
         # Get ROIs
         if prob_map.ndim > 3 and prob_map.shape[1] > 1:
@@ -167,14 +170,14 @@ class analysis_e022_sttl(BasePipeline):
             pass
 
         # 3.2 Get ROIs
-        img_logger.info(f"3.2 - Extracting ROIs")
+        img_logger.info(f"3.2 - Extracting ROIs, Memory:{get_memory_usage()}")
         img_analyser = RoiAnalyser(ip.img, prob_map, stack_order=("TSCXY", "TCXY"))
         img_analyser.create_binary_mask()
         img_analyser.get_labels()
         img_logger.info(f"{img_analyser.total_rois} objects found")
 
         # 4. Calc. measurements
-        img_logger.info(f"4 - Starting measurements")
+        img_logger.info(f"4 - Starting measurements, Memory:{get_memory_usage()}")
         morphology_prop = [
             "label",
             "centroid",
@@ -220,11 +223,11 @@ class analysis_e022_sttl(BasePipeline):
         )
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
-        img_logger.info(f"4 - Measurements completed")
+        img_logger.info(f"4 - Measurements completed, Memory:{get_memory_usage()}")
 
         # 4.1 Object classification
         if self.object_classifier is not None:
-            img_logger.info(f"4.1 - Running object classification")
+            img_logger.info(f"4.1 - Running object classification, Memory:{get_memory_usage()}")
             predictions = self.object_classifier.predict(
                 morpho_measurements[self.object_classifier.feature_names_in_]
             )
@@ -233,7 +236,7 @@ class analysis_e022_sttl(BasePipeline):
 
         # 4.2 PI classification
         if self.pi_classifier is not None:
-            img_logger.info(f"4.2 - Running PI classification")
+            img_logger.info(f"4.2 - Running PI classification, Memory:{get_memory_usage()}")
             predictions = self.pi_classifier.predict(
                 fl_measurements[self.pi_classifier.feature_names_in_]
             )
