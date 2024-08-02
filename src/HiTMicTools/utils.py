@@ -3,6 +3,9 @@ import itertools
 import json
 import pandas as pd
 import ome_types
+import psutil
+import GPUtil
+import platform
 from datetime import timedelta
 from typing import List, Union, Dict, Any
 
@@ -257,3 +260,28 @@ def read_metadata(metadata_file: str) -> Dict[str, Any]:
     with open(metadata_file) as f:
         metadata = json.load(f)
     return metadata
+
+
+def get_system_info():
+    cpu_percent = psutil.cpu_percent()
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    gpus = GPUtil.getGPUs()
+    cpu_model = platform.processor()
+
+    info = f"System Information:\n"
+    info += f"OS: {platform.system()} {platform.release()}\n"
+    info += f"CPU Model: {cpu_model}\n"
+    info += f"CPU Usage: {cpu_percent}%\n"
+    info += f"Memory: {memory.percent}% used ({memory.used / (1024**3):.2f}GB / {memory.total / (1024**3):.2f}GB)\n"
+    info += f"Disk: {disk.percent}% used ({disk.used / (1024**3):.2f}GB / {disk.total / (1024**3):.2f}GB)\n"
+    
+    if gpus:
+        for i, gpu in enumerate(gpus):
+            info += f"GPU {i}: {gpu.name}\n"
+            info += f"  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB\n"
+            info += f"  GPU utilization: {gpu.load*100}%\n"
+    else:
+        info += "No GPUs detected\n"
+    
+    return info
