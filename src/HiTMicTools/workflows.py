@@ -4,10 +4,10 @@ import fnmatch
 import joblib
 import logging
 from logging.handlers import MemoryHandler
-
 import concurrent.futures
 from typing import List, Dict, Optional, Union
 from HiTMicTools.segmentation_model import Segmentator
+from HiTMicTools.utils import get_system_info
 
 class BasePipeline:
     """
@@ -29,11 +29,12 @@ class BasePipeline:
         image_classifier_args: Dict[str, Union[str, int, float, bool]],
         object_classifier: str,
         pi_classifier: str,
+        worklist_id : str  = "",
         file_type: str = ".nd2",
     ):
         last_folder = os.path.basename(os.path.normpath(input_path))
         self.main_logger = self.setup_logger(
-            output_path, last_folder, print_output=True
+            output_path, last_folder, logger_id = worklist_id, print_output=True
         )
         self.input_path = input_path
         if not os.path.exists(output_path):
@@ -46,14 +47,14 @@ class BasePipeline:
         self.pi_classifier = self.add_classifier(pi_classifier)
 
     def setup_logger(
-        self, output_path: str, name: str, print_output: bool = False
+        self, output_path: str, name: str, logger_id : str = "", print_output: bool = False
     ) -> logging.Logger:
         """Set up a logger for logging the analysis progress."""
 
         # Set up logger file
         last_folder = os.path.basename(os.path.normpath(name))
-        log_file = os.path.join(output_path, f"{name}_analysis.log")
-        logger_name = f"{output_path}_{name}"  # Use a unique identifier for each instance important for parallelisation
+        log_file = os.path.join(output_path, f"{name}_{logger_id}_analysis.log")
+        logger_name = f"{output_path}_{name}_{logger_id}"  # Use a unique identifier for each instance important for parallelisation
         logger = logging.getLogger(logger_name)
 
         # Set logger level and format
@@ -138,7 +139,7 @@ class BasePipeline:
             file_list = glob.glob(os.path.join(input_path, combined_pattern))
         elif isinstance(file_list, str) and file_list.endswith(".txt") and os.path.exists(file_list):
             with open(file_list, "r") as file:
-                file_list = [line.rstrip() for line in file if fnmatch.fnmatch(line.rstrip(), combined_pattern)]
+                file_list = [line.rstrip() for line in file]
         elif isinstance(file_list, list):
             file_list = [file for file in file_list if fnmatch.fnmatch(file, combined_pattern)]
         else:
@@ -185,6 +186,8 @@ class BasePipeline:
             - The method will analyze each image file using the analyse_image method.
         """
         self.main_logger.info(f"Processing folder: {self.input_path}")
+        self.main_logger.info(get_system_info())
+
         file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
@@ -235,6 +238,8 @@ class BasePipeline:
         """
 
         file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
+        self.main_logger.info(f"Processing folder: {self.input_path}")
+        self.main_logger.info(get_system_info())
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
         )
@@ -244,7 +249,7 @@ class BasePipeline:
             num_workers = int(total_cpu_threads // 2)
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {num_workers}")
-
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = []
             for index, name in enumerate(file_list, start=1):

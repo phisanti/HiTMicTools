@@ -26,7 +26,10 @@ if len(sys.argv) > 2:
     extra_arg = sys.argv[2]
     if os.path.isfile(extra_arg) and extra_arg.endswith(".txt"):
         configs.input_data["file_list"] = extra_arg
+        worklist_id = os.path.basename(extra_arg).split(".")[0]
+
     else:
+        worklist_id  = ""
         print("Invalid extra argument. Please provide a txt file or a folder.")
         sys.exit(1)
 
@@ -55,6 +58,7 @@ analysis_wf = analysis_pipeline(
     object_classifier=configs.classification["object_classifier_path"],
     pi_classifier=configs.classification["pi_classifier_path"],
     file_type=configs.input_data["file_type"],
+    worklist_id=worklist_id,
 )
 
 # Config image analysis
