@@ -214,7 +214,7 @@ def get_timestamps(
             timestep = timestamp
 
             timestamps.append(
-                {"frame": i, "date_time": formatted_timepoint, "timestep": timestep}
+                {"frame": z[i].the_t, "date_time": formatted_timepoint, "timestep": timestep}
             )
         else:
             continue
