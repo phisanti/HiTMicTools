@@ -11,7 +11,16 @@ from datetime import timedelta
 from typing import List, Union, Dict, Any
 
 
-def remove_file_extension(filename):
+def remove_file_extension(filename: str) -> str:
+    """
+    Remove specific file extensions from a filename.
+    
+    Args:
+        filename (str): The input filename.
+    
+    Returns:
+        str: Filename with the extension removed.
+    """
     extensions = [
         'nd2',
         'ome\.p\.tiff',
@@ -274,13 +283,25 @@ def read_metadata(metadata_file: str) -> Dict[str, Any]:
     return metadata
 
 
-def get_memory_usage():
+def get_memory_usage() -> str:
+    """
+    Get the current memory usage of the process.
+    
+    Returns:
+        str: Memory usage in MB.
+    """
     process = psutil.Process()
     memory_info = process.memory_info()
     return f"{memory_info.rss / (1024 * 1024):.2f} MB"
 
 
-def get_system_info():
+def get_system_info() -> str:
+    """
+    Get detailed system information including CPU, memory, disk, and GPU usage.
+    
+    Returns:
+        str: Formatted string containing system information.
+    """
     cpu_percent = psutil.cpu_percent()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
