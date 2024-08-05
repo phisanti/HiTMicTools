@@ -6,9 +6,21 @@ import ome_types
 import psutil
 import GPUtil
 import platform
+import re
 from datetime import timedelta
 from typing import List, Union, Dict, Any
 
+
+def remove_file_extension(filename):
+    extensions = [
+        'nd2',
+        'ome\.p\.tiff',
+        'p\.tiff',
+        'ome\.tiff',
+        'tiff'
+    ]
+    pattern = r'\.(?:' + '|'.join(extensions) + ')$'
+    return re.sub(pattern, '', filename)
 
 def adjust_dimensions(img: np.ndarray, dim_order: str) -> np.ndarray:
     """

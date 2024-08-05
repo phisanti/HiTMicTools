@@ -14,7 +14,8 @@ from HiTMicTools.utils import (
     get_timestamps,
     measure_background_intensity,
     convert_image,
-    get_memory_usage
+    get_memory_usage,
+    remove_file_extension,
 )
 from jetraw_tools.image_reader import ImageReader
 import psutil
@@ -34,7 +35,8 @@ class analysis_e022_sttl(BasePipeline):
 
 
         # 1. Read Image:
-        movie_name = os.path.splitext(name)[0]
+        movie_name = remove_file_extension(name)
+        name = movie_name
         img_logger = self.setup_logger(self.output_path, movie_name)
         img_logger.info(f"Start analysis for {movie_name}")
         reference_channel = self.reference_channel
@@ -44,7 +46,6 @@ class analysis_e022_sttl(BasePipeline):
         img_logger.info(f"1 - Reading image, Memory:{get_memory_usage()}")
         image_reader = ImageReader(file_i, self.file_type)
         img, metadata = image_reader.read_image()
-        name = os.path.splitext(name)[0]
         pixel_size = metadata.images[0].pixels.physical_size_x
         size_x = metadata.images[0].pixels.size_x
         size_y = metadata.images[0].pixels.size_y
