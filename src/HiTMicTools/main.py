@@ -73,8 +73,8 @@ if configs.pipeline_setup["parallel_processing"]:
     analysis_wf.process_folder_parallel(
         files_pattern=configs.input_data["file_pattern"],
         file_list=configs.input_data["file_list"],
-        export_labeled_mask=True,
-        export_aligned_image=True,
+        export_labeled_mask=configs.input_data["export_labelled_masks"],
+        export_aligned_image=configs.input_data["export_labelled_masks"],
         num_workers=num_workers,
         **extra_args,
     )
@@ -82,7 +82,7 @@ else:
     analysis_wf.process_folder(
         files_pattern=configs.input_data["file_pattern"],
         file_list=configs.input_data["file_list"],
-        export_labeled_mask=True,
-        export_aligned_image=True,
+        export_labeled_mask=configs.input_data["export_labelled_masks"],
+        export_aligned_image=configs.input_data["export_labelled_masks"],
         **extra_args,
     )
