@@ -195,6 +195,7 @@ class analysis_e022_sttl(BasePipeline):
             "max_intensity",
             "min_intensity",
             "mean_intensity",
+            "area",
         ]
         img_logger.info("Extracting morphological measurements")
         morpho_measurements = img_analyser.get_roi_measurements(
@@ -239,13 +240,22 @@ class analysis_e022_sttl(BasePipeline):
                 fl_measurements[self.pi_classifier.feature_names_in_]
             )
             fl_measurements["pi_class"] = predictions
-
+            d_summary = fl_measurements.groupby(['file', 'frame', 'channel', 'date_time', 'timestep', 'object_class']).agg({
+                'label': 'count',
+                'pi_class_neg': lambda x: (x == 'piNEG').sum(),
+                'pi_class_pos': lambda x: (x == 'piPOS').sum(),
+                'area_pineg': lambda x: x[fl_measurements['pi_class'] == 'piNEG'].sum(),
+                'area_pipos': lambda x: x[fl_measurements['pi_class'] == 'piPOS'].sum()
+            }).reset_index()
+        else:
+            d_summary = pd.DataFrame()
 
         # 5. Export data
         export_path = os.path.join(self.output_path, name)
         img_logger.info(f"5 - Writing data to {export_path}")
         morpho_measurements.to_csv(export_path + "_morpho.csv")
         fl_measurements.to_csv(export_path + "_fl.csv")
+        d_summary.to_csv(export_path + "_summary.csv")
 
         if export_labeled_mask:
             pmap_8bit = convert_image(img_analyser.proba_map, np.uint8)
