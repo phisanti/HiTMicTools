@@ -187,7 +187,6 @@ class analysis_e022_sttl(BasePipeline):
             "area",
             "perimeter",
             "feret_diameter_max",
-            "coords",
         ]
         fl_prop = [
             "label",
