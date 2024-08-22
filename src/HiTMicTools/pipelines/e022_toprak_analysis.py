@@ -171,6 +171,7 @@ class analysis_e022_sttl(BasePipeline):
         img_logger.info(f"3.2 - Extracting ROIs, Memory:{get_memory_usage()}")
         img_analyser = RoiAnalyser(ip.img, prob_map, stack_order=("TSCXY", "TCXY"))
         img_analyser.create_binary_mask()
+        img_analyser.clean_binmask(min_pixel_size=20)
         img_analyser.get_labels()
         img_logger.info(f"{img_analyser.total_rois} objects found")
 
@@ -231,6 +232,7 @@ class analysis_e022_sttl(BasePipeline):
             )
             fl_measurements["object_class"] = predictions
             morpho_measurements["object_class"] = predictions
+            morpho_measurements['file'] = name
 
         # 4.2 PI classification
         if self.pi_classifier is not None:
@@ -239,13 +241,23 @@ class analysis_e022_sttl(BasePipeline):
                 fl_measurements[self.pi_classifier.feature_names_in_]
             )
             fl_measurements["pi_class"] = predictions
-            d_summary = fl_measurements.groupby(['file', 'frame', 'channel', 'date_time', 'timestep', 'object_class']).agg({
-                'label': 'count',
-                'pi_class_neg': lambda x: (x == 'piNEG').sum(),
-                'pi_class_pos': lambda x: (x == 'piPOS').sum(),
-                'area_pineg': lambda x: x[fl_measurements['pi_class'] == 'piNEG'].sum(),
-                'area_pipos': lambda x: x[fl_measurements['pi_class'] == 'piPOS'].sum()
-            }).reset_index()
+            fl_measurements['file'] = name
+            try:
+                d_summary = fl_measurements.groupby(['file', 'frame', 'channel', 'date_time', 'timestep', 'object_class']).agg(
+                    total_count=('label', 'count'),
+                    pi_class_neg=('pi_class', lambda x: (x == 'piNEG').sum()),
+                    pi_class_pos=('pi_class', lambda x: (x == 'piPOS').sum()),
+                    area_pineg=('area', lambda x: x[fl_measurements.loc[x.index, 'pi_class'] == 'piNEG'].sum()),
+                    area_pipos=('area', lambda x: x[fl_measurements.loc[x.index, 'pi_class'] == 'piPOS'].sum())
+                ).reset_index()
+
+                img_logger.info(f"Groupby operation completed successfully. Shape of d_summary: {d_summary.shape}")
+            except Exception as e:
+                img_logger.error(f"Error during groupby operation: {str(e)}")
+                img_logger.error(f"Columns in fl_measurements: {fl_measurements.columns}")
+                img_logger.error(f"Unique values in 'pi_class': {fl_measurements['pi_class'].unique()}")
+                d_summary=pd.DataFrame()
+            img_logger.info(f"d_summary created successfully. Memory usage: {get_memory_usage()}")
         else:
             d_summary = pd.DataFrame()
 

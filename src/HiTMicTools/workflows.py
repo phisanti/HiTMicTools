@@ -8,6 +8,17 @@ import concurrent.futures
 from typing import List, Dict, Optional, Union
 from HiTMicTools.segmentation_model import Segmentator
 from HiTMicTools.utils import get_system_info
+import gc
+from contextlib import contextmanager
+
+
+@contextmanager
+def managed_resource(*objects):
+    yield objects
+    for obj in objects:
+        del obj
+    gc.collect()
+
 
 class BasePipeline:
     """
@@ -251,24 +262,21 @@ class BasePipeline:
         self.main_logger.info(f"Number of threads used: {num_workers}")
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = []
+            futures = {}
             for index, name in enumerate(file_list, start=1):
                 file_i = os.path.join(self.input_path, name)
-                self.main_logger.info(
-                    f"Submitting file number {index} of {len(file_list)}"
-                )
-                future = executor.submit(
-                    self.analyse_image,
-                    file_i,
-                    name,
-                    export_labeled_mask,
-                    export_aligned_image,
-                    **kwargs,
-                )
-                futures.append(future)
+                self.main_logger.info(f"Submitting file number {index} of {len(file_list)}")
+                future = executor.submit(self.analyse_image, file_i, name, export_labeled_mask, export_aligned_image, **kwargs)
+                futures[future] = (index, name)
 
             for future in concurrent.futures.as_completed(futures):
                 try:
-                    future.result()
+                    with managed_resource(future):
+                        result = future.result()
+                        # Process result if needed
+                    gc.collect()  # Force garbage collection after each file
                 except Exception as e:
-                    self.main_logger.error(f"Error processing file: {e}")
+                    index, name = futures[future]
+                    self.main_logger.error(f"Error processing file {index} ({name}): {e}")
+
+        gc.collect()  # Final garbage collection after all files are processed
