@@ -2,7 +2,7 @@ import json
 import numpy as np
 import pandas as pd
 import cv2
-from scipy.ndimage import label
+from scipy.ndimage import label, sum_labels
 from scipy.stats import skew, linregress
 from scipy.spatial.distance import pdist
 from skimage.morphology import skeletonize
@@ -225,6 +225,22 @@ class RoiAnalyser:
 
         # Convert probabilities to binary values
         self.binary_mask = self.proba_map > threshold
+
+    def clean_binmask(self, min_pixel_size=20):
+        """
+        Clean the binary mask by removing small ROIs.
+        Args:
+            min_pixel_size (int): Minimum ROI size in pixels.
+
+        Returns:
+            cleaned_mask (np.ndarray): Cleaned binary mask.
+        """
+        labeled, num_features = label(self.binary_mask)
+        sizes = sum_labels(self.binary_mask, labeled, range(1, num_features + 1))
+        mask_sizes = sizes >= min_pixel_size
+        cleaned_mask = mask_sizes[labeled - 1]
+        
+        self.binary_mask = cleaned_mask
 
     def get_labels(self):
         """
