@@ -1,4 +1,5 @@
 import os
+import gc
 import tifffile
 import pandas as pd
 import numpy as np
@@ -267,7 +268,11 @@ class Toprak_updated(BasePipeline):
             image_8bit = convert_image(ip.img, np.uint8)
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
 
-        img_logger.info(f"Analysis completed for {movie_name}")
+        img_logger.info(f"Analysis completed for {movie_name}, Memory:{get_memory_usage()}")
+        del prob_map, ip, img, morpho_measurements, fl_measurements, d_summary, img_analyser
+        gc.collect()
+        img_logger.info(f"Garbage collection completed, Memory:{get_memory_usage()}")
+        
         self.remove_logger(img_logger)
         
-        return prob_map, ip, metadata
+        return metadata, name
