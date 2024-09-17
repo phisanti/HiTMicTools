@@ -11,7 +11,7 @@ from typing import Union, List
 from cupyx.scipy import ndimage
 from cupyx.scipy import stats
 
-from scipy.ndimage import label
+from scipy.ndimage import label, binary_dilation
 from scipy.stats import skew, linregress
 from scipy.spatial.distance import pdist
 from skimage.morphology import skeletonize
@@ -154,7 +154,20 @@ def dilated_measures(regionmask, intensity, structure=np.ones((5, 5)), iteration
     Returns:
     float: The standard deviation of pixel intensities within the ROI.
     """
-    #TODO:
+    regionmask = regionmask.astype(bool)
+
+    # Dilate the regionmask using scipy's binary_dilation
+    dilated_regionmask = binary_dilation(regionmask, structure=structure, iterations=iterations)
+
+    # Get the intensities within the dilated ROI
+    roi_intensities = intensity[dilated_regionmask]
+    
+    std_px = np.std(roi_intensities)
+    mean_px = np.mean(roi_intensities)
+    min_px = np.min(roi_intensities)
+    max_px = np.max(roi_intensities)
+    pixel_area = np.sum(dilated_regionmask)
+
     return (std_px, mean_px, min_px, max_px, pixel_area)
 
 

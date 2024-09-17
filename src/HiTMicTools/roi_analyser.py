@@ -235,14 +235,16 @@ class RoiAnalyser:
         Returns:
             cleaned_mask (np.ndarray): Cleaned binary mask.
         """
-        labeled, num_features = label(self.binary_mask)
-        sizes = sum_labels(self.binary_mask, labeled, range(1, num_features + 1))
+        labeled, num_features = self.get_labels(return_value=True)
+        sizes = np.bincount(labeled.ravel())[1:]  # Exclude background (label 0)
         mask_sizes = sizes >= min_pixel_size
-        cleaned_mask = mask_sizes[labeled - 1]
-        
+        label_map = np.zeros(num_features + 1, dtype=int)
+        label_map[1:][mask_sizes] = np.arange(1, np.sum(mask_sizes) + 1)
+        cleaned_labeled = label_map[labeled]
+        cleaned_mask = cleaned_labeled > 0
         self.binary_mask = cleaned_mask
-
-    def get_labels(self):
+        
+    def get_labels(self, return_value=False):
         """
         Get the labeled mask for the binary mask.
 
@@ -261,8 +263,11 @@ class RoiAnalyser:
             max_label += num
             num_rois += num
 
-        self.total_rois = num_rois
-        self.labeled_mask = labeled_mask
+        if return_value:
+            return labeled_mask, num_rois
+        else:
+            self.total_rois = num_rois
+            self.labeled_mask = labeled_mask
 
     def get_roi_measurements(
         self,
