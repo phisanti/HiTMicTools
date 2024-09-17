@@ -22,7 +22,7 @@ from jetraw_tools.image_reader import ImageReader
 import psutil
 
 
-class analysis_e022_sttl(BasePipeline):
+class Toprak_updated(BasePipeline):
     def analyse_image(
         self,
         file_i: str,
