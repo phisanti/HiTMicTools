@@ -7,6 +7,7 @@ from HiTMicTools.utils import read_metadata
 from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.StandardAnalysis import StandardAnalysis
 from HiTMicTools.pipelines.e022_toprak_analysis import analysis_e022_sttl
+from HiTMicTools.pipelines.toprak_updated import toprak_updated
 
 if len(sys.argv) < 2:
     print("Please pass the YAML configuration file as main.py /path/to/config.yml.")
@@ -47,6 +48,8 @@ seg_params = {
 pipeline_map = {
     "standard": StandardAnalysis,
     "e022_toprak": analysis_e022_sttl,
+    "toprak_updated": toprak_updated,
+
 }
 
 pipeline_name = configs.pipeline_setup["name"]
