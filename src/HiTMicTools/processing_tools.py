@@ -234,6 +234,32 @@ class ImagePreprocessor:
             t, s, c = index
             self.img[t, s, c, :, :] = norm_eq_hist(self.img[t, s, c, :, :])
 
+    def scale_channel(
+        self,
+        nframes: Union[int, range, List[int]],
+        nslices: Union[int, range, List[int]],
+        nchannels: Union[int, range, List[int]],
+    ) -> None:
+        """
+        Scale the image by (x - mean) / sd for each slice of the target channel.
+
+        Args:
+            nframes (Union[int, range, List[int]]): Frame indices to process.
+            nslices (Union[int, range, List[int]]): Slice indices to process.
+            nchannels (Union[int, range, List[int]]): Channel indices to process.
+
+        Returns:
+            None
+        """
+        index_table = stack_indexer(nframes, nslices, nchannels)
+
+        for index in index_table:
+            t, s, c = index
+            slice_data = self.img[t, s, c, :, :]
+            mean = np.mean(slice_data)
+            std = np.std(slice_data)
+            self.img[t, s, c, :, :] = (slice_data - mean) / std
+
     @staticmethod
     def check_size_limit(
         input: Union[int, range, List[int]], size_limit: int, name: str
