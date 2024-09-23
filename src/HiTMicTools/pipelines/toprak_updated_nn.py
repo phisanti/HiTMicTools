@@ -192,8 +192,6 @@ class Toprak_updated_nn(BasePipeline):
         img_logger.info("Extracting time data")
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
-        img_logger.info("Extracting background fluorescence intensity")
-        #bck_fl = measure_background_intensity(ip.img_original, channel=1)
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")

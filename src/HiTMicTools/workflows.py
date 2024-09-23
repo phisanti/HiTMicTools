@@ -290,7 +290,7 @@ class BasePipeline:
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {num_workers}")
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = {}
             for index, name in enumerate(file_list, start=1):
                 file_i = os.path.join(self.input_path, name)
@@ -304,11 +304,12 @@ class BasePipeline:
                     with managed_resource(future):
                         result = future.result()
                     index, name, start_time = futures[future]
+                    end_time = time.time()
                     elapsed_time = end_time - start_time
                     self.main_logger.info(f"Job {name} has finished in time {elapsed_time:.2f} seconds")
                     gc.collect()  # Force garbage collection after each file
                 except Exception as e:
-                    index, name = futures[future]
+                    index, name, start_time = futures[future]
                     self.main_logger.error(f"Error processing file {index} ({name}): {e}")
 
         gc.collect()  # Final garbage collection after all files are processed
