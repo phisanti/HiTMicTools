@@ -1,101 +1,23 @@
+# Standard library imports
 import json
-import numpy as np
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+# Third-party library imports
 import cupy as cp
 import pandas as pd
-import cv2
-
-import itertools
-from typing import Union, List
-
-
 from cupyx.scipy import ndimage
 from cupyx.scipy import stats
+from cucim.skimage.measure import regionprops_table
 
-from scipy.ndimage import label, binary_dilation
-from scipy.stats import skew, linregress
-from scipy.spatial.distance import pdist
-from skimage.morphology import skeletonize
-from skimage.measure import regionprops_table
+# Local imports
+from HiTMicTools.utils import adjust_dimensions, stack_indexer
 
-def border_complexity(regionmask, intensity):
-    """
-    Calculate the border complexity of a region by comparing the perimeter of the region
-    to the perimeter of its convex hull.
-
-    Parameters:
-    regionmask (ndarray): A boolean mask indicating the region of interest.
-    intensity (ndarray): An array of intensity values (unused in this function).
-
-    Returns:
-    float: The border complexity value, defined as the ratio of the region's perimeter
-           to the perimeter of its convex hull.
-    """
-
-    # TODO: Calculate the perimeter of the region using cv2.contourPerimeter
-
-
-    return border_complexity
-
-def rod_shape_coef(regionmask, intensity):
-    """
-    Skeletonize the region mask, perform a fast linear regression, and return the R-squared value.
-
-    Parameters:
-    regionmask (ndarray): A boolean mask indicating the region of interest.
-    intensity (ndarray): An array of intensity values (unused in this function).
-
-    Returns:
-    float: The R-squared value of the linear regression on the skeletonized region.
-    """
-    # Get skeleton coords
-    skeleton = ndimage.morphology.skeletonize(regionmask)
-    y, x = cp.where(skeleton)
-
-    if len(x) < 2:
-        return 0.0
-
-    if cp.all(x == x[0]):
-        return 1.0
-
-    # Calculate the R-squared value
-    try:
-        slope, intercept, r_value, p_value, std_err = stats.linregress(x.get(), y.get())
-        r_squared = r_value**2
-    except ValueError:
-        r_squared = 0
-
-    return r_squared
-
-def coords_centroid(coords):
-    centroid = cp.mean(coords, axis=0)
-    return pd.Series(centroid.get(), index=["slice", "y", "x"])
-
-
-def quartiles(regionmask, intensity):
-    """
-    Calculate the quartiles of the given intensity values within the specified region mask.
-
-    Parameters:
-    regionmask (ndarray): A boolean mask indicating the region of interest.
-    intensity (ndarray): An array of intensity values.
-
-    Returns:
-    ndarray: An array containing the 25th, 50th, and 75th percentiles of the intensity values within the region mask.
-    """
-    return cp.percentile(intensity[regionmask], q=(25, 50, 75))
-
+# Type hints
+from numpy.typing import NDArray
+from pandas import DataFrame, Series
 
 def roi_skewness(regionmask, intensity):
-    """
-    Calculate the skewness of pixel intensities within a region of interest (ROI).
-
-    Parameters:
-    regionmask (cupy.ndarray): A binary mask defining the ROI.
-    intensity (cupy.ndarray): The intensity image.
-
-    Returns:
-    float: The skewness of pixel intensities within the ROI.
-    """
+    """Cupy version for the ROI standard deviation as defined in analysis_tools.utils"""
     roi_intensities = intensity[regionmask]
 
     try:
@@ -107,160 +29,30 @@ def roi_skewness(regionmask, intensity):
         return float(stats.skew(roi_intensities, bias=False))
     except Exception:
         return 0
-    
 
 def roi_std_dev(regionmask, intensity):
-    """
-    Calculate the standard deviation of pixel intensities within a region of interest (ROI).
-
-    Parameters:
-    regionmask (cupy.ndarray): A binary mask defining the ROI.
-    intensity (cupy.ndarray): The intensity image.
-
-    Returns:
-    float: The standard deviation of pixel intensities within the ROI.
-    """
+    """Cupy version for the ROI standard deviation as defined in analysis_tools.utils"""
     roi_intensities = intensity[regionmask]
     return float(cp.std(roi_intensities))
 
-
-def laplacian(image):
-    """
-    Compute the Laplacian of the image and then return the focus
-    measure, which is simply the variance of the Laplacian.
-    """
-
-    # TODO:
-
-    return cv2.Laplacian(image, ddepth)
+def coords_centroid(coords):
+    centroid = np.mean(coords, axis=0)
+    return pd.Series(centroid, index=["slice", "y", "x"])
 
 
-def variance_filter(image, kernel_size):
-    # Convert the image to float32
-
-    # TODO: 
-    return variance
-
-def dilated_measures(regionmask, intensity, structure=np.ones((5, 5)), iterations=1):
-    """
-    Calculate the standard deviation of pixel intensities within a region of interest (ROI).
-
-    Parameters:
-    regionmask (numpy.ndarray): A binary mask defining the ROI.
-    intensity (numpy.ndarray): The intensity image.
-    structure (numpy.ndarray): The structuring element used for dilation.
-    iterations (int): The number of times dilation is applied.
-
-    Returns:
-    float: The standard deviation of pixel intensities within the ROI.
-    """
-    regionmask = regionmask.astype(bool)
-
-    # Dilate the regionmask using scipy's binary_dilation
-    dilated_regionmask = binary_dilation(regionmask, structure=structure, iterations=iterations)
-
-    # Get the intensities within the dilated ROI
-    roi_intensities = intensity[dilated_regionmask]
-    
-    std_px = np.std(roi_intensities)
-    mean_px = np.mean(roi_intensities)
-    min_px = np.min(roi_intensities)
-    max_px = np.max(roi_intensities)
-    pixel_area = np.sum(dilated_regionmask)
-
-    return (std_px, mean_px, min_px, max_px, pixel_area)
-
-
-import cupy as cp
-
-def adjust_dimensions_ingpu(img: cp.ndarray, dim_order: str) -> cp.ndarray:
-    """
-    Adjust the dimensions of an image array to match the target order 'TSCXY'.
-
-    Args:
-        img (cp.ndarray): Input image array.
-        dim_order (str): Current dimension order of the image. Should be a permutation or subset of 'TSCXY'.
-                         T=Time, S=Slice, C=Channel, X=Width, Y=Height.
-
-    Returns:
-        cp.ndarray: Image array with adjusted dimensions.
-    """
-
-    target_order = "TSCXY"
-    assert set(dim_order).issubset(
-        set(target_order)
-    ), "Invalid dimension order. Allowed dimensions: 'TSCXY'"
-
-    missing_dims = set(target_order) - set(dim_order)
-
-    # Add missing dimensions
-    for dim in missing_dims:
-        index = target_order.index(dim)
-        img = cp.expand_dims(img, axis=index)
-        dim_order = dim_order[:index] + dim + dim_order[index:]
-
-    # Reorder dimensions
-    order = [dim_order.index(dim) for dim in target_order]
-    img = cp.transpose(img, order)
-
-    return img
-
-
-def stack_indexer_ingpu(
-    nframes: Union[int, List[int], range] = [0],
-    nslices: Union[int, List[int], range] = [0],
-    nchannels: Union[int, List[int], range] = [0],
-) -> cp.ndarray:
-    """
-    Generate an index table for accessing specific frames, slices, and channels in an image stack.
-    This aims to simplify the process of iterating over different combinations of frame, slice,
-    and channel indices with for loops.
-
-    Args:
-        nframes (Union[int, List[int], range], optional): Frame indices. Defaults to [0].
-        nslices (Union[int, List[int], range], optional): Slice indices. Defaults to [0].
-        nchannels (Union[int, List[int], range], optional): Channel indices. Defaults to [0].
-
-    Returns:
-        cp.ndarray: Index table with shape (n_combinations, 3), where each row represents a combination
-                    of frame, slice, and channel indices.
-
-    Raises:
-        ValueError: If any dimension contains negative integers.
-        TypeError: If any dimension is not an integer, list of integers, or range object.
-    """
-    dimensions = []
-    for dimension in [nframes, nslices, nchannels]:
-        if isinstance(dimension, int):
-            if dimension < 0:
-                raise ValueError("Dimensions must be positive integers or lists.")
-            dimensions.append([dimension])
-        elif isinstance(dimension, (list, range)):
-            if not all(isinstance(i, int) and i >= 0 for i in dimension):
-                raise ValueError(
-                    "All elements in the list dimensions must be positive integers."
-                )
-            dimensions.append(dimension)
-        else:
-            raise TypeError(
-                "All dimensions must be either positive integers or lists of positive integers."
-            )
-
-    combinations = list(itertools.product(*dimensions))
-    index_table = cp.array(combinations)
-    return index_table
+def convert_to_list_and_dump(row):
+    return json.dumps(row.tolist())
 
 
 class RoiAnalyser:
     def __init__(self, image, probability_map, stack_order=("TSCXY", "TXY")):
-        image = stack_indexer_ingpu(image, stack_order[0])
-        probability_map = stack_indexer_ingpu(probability_map, stack_order[1])
+        image = adjust_dimensions(image, stack_order[0])
+        probability_map = adjust_dimensions(probability_map, stack_order[1])
 
-        self.img = image
-        self.proba_map = probability_map
+        self.img = cp.asarray(image)
+        self.proba_map = cp.asarray(probability_map)
         self.stack_order = stack_order
 
-        pass
 
     def create_binary_mask(self, threshold=0.5):
         """
@@ -276,3 +68,112 @@ class RoiAnalyser:
 
         # Convert probabilities to binary values
         self.binary_mask = self.proba_map > threshold
+
+    def clean_binmask(self, min_pixel_size=20):
+        """
+        Clean the binary mask by removing small ROIs.
+        Args:
+            min_pixel_size (int): Minimum ROI size in pixels.
+
+        Returns:
+            cleaned_mask (np.ndarray): Cleaned binary mask.
+        """
+        labeled, num_features = self.get_labels(return_value=True)
+        sizes = cp.bincount(labeled.ravel())[1:]
+        mask_sizes = sizes >= min_pixel_size
+        label_map = cp.zeros(num_features + 1, dtype=int)
+        label_map[1:][mask_sizes] = cp.arange(1, cp.sum(mask_sizes) + 1)
+        cleaned_labeled = label_map[labeled]
+        cleaned_mask = cleaned_labeled > 0
+        self.binary_mask = cleaned_mask
+        
+    def get_labels(self, return_value=False):
+        """
+        Get the labeled mask for the binary mask.
+
+        Returns:
+            None
+        """
+        labeled_mask = np.empty_like(self.binary_mask, dtype=int)
+        num_rois = 0
+        max_label = 0
+
+        for i in range(self.binary_mask.shape[0]):
+            labeled_frame, num = label(self.binary_mask[i])
+            labeled_mask[i] = np.where(
+                labeled_frame != 0, labeled_frame + max_label, labeled_frame
+            )
+            max_label += num
+            num_rois += num
+
+        if return_value:
+            return labeled_mask, num_rois
+        else:
+            self.total_rois = num_rois
+            self.labeled_mask = labeled_mask
+
+    def get_roi_measurements(
+        self,
+        target_channel=0,
+        target_slice=0,
+        properties=["label", "centroid", "mean_intensity"],
+        extra_properties=None,
+    ):
+        """
+        Get measurements for each ROI in the labeled mask for a specific channel and all frames.
+
+        Args:
+            img (numpy.ndarray): The original image.
+            labeled_mask (numpy.ndarray): The labeled mask containing the ROIs.
+            properties (list, optional): A list of properties to measure for each ROI.
+                Defaults to ['mean_intensity', 'centroid'].
+
+        Returns:
+            list: A list of dictionaries, where each dictionary contains the measurements
+                for a single ROI.
+        """
+
+        assert (
+            self.labeled_mask is not None
+        ), "Run get_labels() first to generate labeled mask"
+
+        img = self.img[:, target_slice, target_channel, :, :]
+        labeled_mask = self.labeled_mask[:, target_slice, 0, :, :]
+
+        all_roi_properties = []
+
+        for frame in range(img.shape[0]):
+            img_frame = cp.asnumpy(img[frame])
+            labeled_mask_frame = cp.asnumpy(labeled_mask[frame])
+
+            roi_properties = regionprops_table(
+                labeled_mask_frame,
+                intensity_image=img_frame,
+                properties=properties,
+                separator="_",
+                extra_properties=extra_properties,
+            )
+            roi_properties_df = pd.DataFrame(roi_properties)
+            roi_properties_df["frame"] = frame
+            roi_properties_df["slice"] = target_channel
+            roi_properties_df["channel"] = target_slice
+
+            all_roi_properties.append(roi_properties_df)
+
+        all_roi_properties_df = pd.concat(all_roi_properties, ignore_index=True)
+
+        if "coords" in all_roi_properties_df.columns:
+            all_roi_properties_df["coords"] = all_roi_properties_df["coords"].apply(
+                convert_to_list_and_dump
+            )
+
+        # rearrange the columns
+        required_cols = ["label", "frame", "slice", "channel"]
+        other_cols = [
+            col for col in all_roi_properties_df.columns if col not in required_cols
+        ]
+
+        cols = required_cols + other_cols
+        all_roi_properties_df = all_roi_properties_df[cols]
+
+        return all_roi_properties_df
