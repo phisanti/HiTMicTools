@@ -231,13 +231,14 @@ class BasePipeline:
             f"{len(file_list)} files found with extension {self.file_type}"
         )
 
+        start_time = time.time()  
         for name in file_list:
             self.main_logger.info(f"Processing file: {name}")
             self.main_logger.info(
                 f"File number {file_list.index(name)+1} of {len(file_list)}"
             )
             file_i = os.path.join(self.input_path, name)
-            start_time = time.time()
+            file_start_time = time.time()
             self.analyse_image(
                 file_i,
                 name,
@@ -245,9 +246,14 @@ class BasePipeline:
                 export_aligned_image=export_aligned_image,
                 **kwargs,
             )
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            self.main_logger.info(f"Job {name} has finished in time {elapsed_time:.2f} seconds")
+            file_end_time = time.time()
+            file_elapsed_time = file_end_time - file_start_time
+            self.main_logger.info(f"Job {name} has finished in time {file_elapsed_time:.2f} seconds")
+
+        end_time = time.time() 
+        total_elapsed_time = end_time - start_time
+        self.main_logger.info(f"Total processing time for all files: {total_elapsed_time:.2f} seconds")
+
 
     def process_folder_parallel(
         self,
@@ -290,27 +296,30 @@ class BasePipeline:
             num_workers = int(total_cpu_threads // 2)
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {num_workers}")
-        
+        start_time = time.time()  # Start timing the entire loop
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = {}
             for index, name in enumerate(file_list, start=1):
                 file_i = os.path.join(self.input_path, name)
                 self.main_logger.info(f"Submitting file number {index} of {len(file_list)}")
-                start_time = time.time()
+                file_start_time = time.time()
                 future = executor.submit(self.analyse_image, file_i, name, export_labeled_mask, export_aligned_image, **kwargs)
-                futures[future] = (index, name, start_time)
+                futures[future] = (index, name, file_start_time)
 
             for future in concurrent.futures.as_completed(futures):
                 try:
                     with managed_resource(future):
                         result = future.result()
-                    index, name, start_time = futures[future]
-                    end_time = time.time()
-                    elapsed_time = end_time - start_time
-                    self.main_logger.info(f"Job {name} has finished in time {elapsed_time:.2f} seconds")
+                    index, name, file_start_time = futures[future]
+                    file_end_time = time.time()
+                    file_elapsed_time = file_end_time - file_start_time
+                    self.main_logger.info(f"Job {name} has finished in time {file_elapsed_time:.2f} seconds")
                     gc.collect()  # Force garbage collection after each file
                 except Exception as e:
                     index, name, start_time = futures[future]
                     self.main_logger.error(f"Error processing file {index} ({name}): {e}")
 
+        end_time = time.time()  # End timing the entire loop
+        total_elapsed_time = end_time - start_time
+        self.main_logger.info(f"Total processing time for all files: {total_elapsed_time:.2f} seconds")
         gc.collect()  # Final garbage collection after all files are processed
