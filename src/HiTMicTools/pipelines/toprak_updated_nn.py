@@ -244,7 +244,6 @@ class Toprak_updated_nn(BasePipeline):
             }
 
             # Create a mapping from original label IDs to new class IDs
-            print(labels)
             label_to_class_id = {label: class_to_id[class_name] + 1 for label, class_name in zip(labels, object_classes)}
             vectorized_map = np.vectorize(lambda x: label_to_class_id.get(x, 0))
             new_labeled_mask = vectorized_map(img_analyser.labeled_mask[:, 0, 0])
