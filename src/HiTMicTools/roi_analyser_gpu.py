@@ -5,9 +5,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 # Third-party library imports
 import cupy as cp
 import pandas as pd
-from cupyx.scipy import ndimage
 from cupyx.scipy import stats
+from cupyx.scipy.ndimage import label
 from cucim.skimage.measure import regionprops_table
+import cudf
 
 # Local imports
 from HiTMicTools.utils import adjust_dimensions, stack_indexer
@@ -36,13 +37,56 @@ def roi_std_dev(regionmask, intensity):
     return float(cp.std(roi_intensities))
 
 def coords_centroid(coords):
-    centroid = np.mean(coords, axis=0)
+    centroid = cp.mean(coords, axis=0)
     return pd.Series(centroid, index=["slice", "y", "x"])
 
 
 def convert_to_list_and_dump(row):
     return json.dumps(row.tolist())
 
+def stack_indexer_ingpu(
+    nframes: Union[int, List[int], range] = [0],
+    nslices: Union[int, List[int], range] = [0],
+    nchannels: Union[int, List[int], range] = [0],
+) -> cp.ndarray:
+    """
+    Generate an index table for accessing specific frames, slices, and channels in an image stack.
+    This aims to simplify the process of iterating over different combinations of frame, slice,
+    and channel indices with for loops.
+
+    Args:
+        nframes (Union[int, List[int], range], optional): Frame indices. Defaults to [0].
+        nslices (Union[int, List[int], range], optional): Slice indices. Defaults to [0].
+        nchannels (Union[int, List[int], range], optional): Channel indices. Defaults to [0].
+
+    Returns:
+        cp.ndarray: Index table with shape (n_combinations, 3), where each row represents a combination
+                    of frame, slice, and channel indices.
+
+    Raises:
+        ValueError: If any dimension contains negative integers.
+        TypeError: If any dimension is not an integer, list of integers, or range object.
+    """
+    dimensions = []
+    for dimension in [nframes, nslices, nchannels]:
+        if isinstance(dimension, int):
+            if dimension < 0:
+                raise ValueError("Dimensions must be positive integers or lists.")
+            dimensions.append([dimension])
+        elif isinstance(dimension, (list, range)):
+            if not all(isinstance(i, int) and i >= 0 for i in dimension):
+                raise ValueError(
+                    "All elements in the list dimensions must be positive integers."
+                )
+            dimensions.append(dimension)
+        else:
+            raise TypeError(
+                "All dimensions must be either positive integers or lists of positive integers."
+            )
+
+    combinations = list(itertools.product(*dimensions))
+    index_table = cp.array(combinations)
+    return index_table
 
 class RoiAnalyser:
     def __init__(self, image, probability_map, stack_order=("TSCXY", "TXY")):
@@ -59,11 +103,11 @@ class RoiAnalyser:
         Create a binary mask from an image stack of probabilities.
 
         Args:
-            image_stack (np.ndarray): A 5D numpy array with shape (frames, slices, channels, height, width) containing probabilities.
+            image_stack (cp.ndarray): A 5D cupy array with shape (frames, slices, channels, height, width) containing probabilities.
             threshold (float): The threshold value to use for binarization (default: 0.5).
 
         Returns:
-            np.ndarray: A 5D numpy array with the same shape as the input, where values above the threshold are set to 1, and values below or equal to the threshold are set to 0.
+            cupy.ndarray: A 5D numpy array with the same shape as the input, where values above the threshold are set to 1, and values below or equal to the threshold are set to 0.
         """
 
         # Convert probabilities to binary values
@@ -76,7 +120,7 @@ class RoiAnalyser:
             min_pixel_size (int): Minimum ROI size in pixels.
 
         Returns:
-            cleaned_mask (np.ndarray): Cleaned binary mask.
+            cleaned_mask (cp.ndarray): Cleaned binary mask.
         """
         labeled, num_features = self.get_labels(return_value=True)
         sizes = cp.bincount(labeled.ravel())[1:]
@@ -94,13 +138,13 @@ class RoiAnalyser:
         Returns:
             None
         """
-        labeled_mask = np.empty_like(self.binary_mask, dtype=int)
+        labeled_mask = cp.empty_like(self.binary_mask, dtype=int)
         num_rois = 0
         max_label = 0
 
         for i in range(self.binary_mask.shape[0]):
             labeled_frame, num = label(self.binary_mask[i])
-            labeled_mask[i] = np.where(
+            labeled_mask[i] = cp.where(
                 labeled_frame != 0, labeled_frame + max_label, labeled_frame
             )
             max_label += num
@@ -123,8 +167,8 @@ class RoiAnalyser:
         Get measurements for each ROI in the labeled mask for a specific channel and all frames.
 
         Args:
-            img (numpy.ndarray): The original image.
-            labeled_mask (numpy.ndarray): The labeled mask containing the ROIs.
+            img (cupy.ndarray): The original image.
+            labeled_mask (cupy.ndarray): The labeled mask containing the ROIs.
             properties (list, optional): A list of properties to measure for each ROI.
                 Defaults to ['mean_intensity', 'centroid'].
 
@@ -143,8 +187,8 @@ class RoiAnalyser:
         all_roi_properties = []
 
         for frame in range(img.shape[0]):
-            img_frame = cp.asnumpy(img[frame])
-            labeled_mask_frame = cp.asnumpy(labeled_mask[frame])
+            img_frame = img[frame]
+            labeled_mask_frame = labeled_mask[frame]
 
             roi_properties = regionprops_table(
                 labeled_mask_frame,
@@ -153,27 +197,30 @@ class RoiAnalyser:
                 separator="_",
                 extra_properties=extra_properties,
             )
-            roi_properties_df = pd.DataFrame(roi_properties)
+            roi_properties_df = cudf.DataFrame(roi_properties)
             roi_properties_df["frame"] = frame
             roi_properties_df["slice"] = target_channel
             roi_properties_df["channel"] = target_slice
 
             all_roi_properties.append(roi_properties_df)
 
-        all_roi_properties_df = pd.concat(all_roi_properties, ignore_index=True)
+        all_roi_properties_cudf = cudf.concat(all_roi_properties, ignore_index=True)
 
-        if "coords" in all_roi_properties_df.columns:
-            all_roi_properties_df["coords"] = all_roi_properties_df["coords"].apply(
+        if "coords" in all_roi_properties_cudf.columns:
+            all_roi_properties_cudf["coords"] = all_roi_properties_cudf["coords"].apply(
                 convert_to_list_and_dump
             )
 
         # rearrange the columns
         required_cols = ["label", "frame", "slice", "channel"]
         other_cols = [
-            col for col in all_roi_properties_df.columns if col not in required_cols
+            col for col in all_roi_properties_cudf.columns if col not in required_cols
         ]
 
         cols = required_cols + other_cols
-        all_roi_properties_df = all_roi_properties_df[cols]
+        all_roi_properties_cudf = all_roi_properties_cudf[cols]
+
+        # Convert to pandas DataFrame at the very end
+        all_roi_properties_df = all_roi_properties_cudf.to_pandas()
 
         return all_roi_properties_df
