@@ -42,7 +42,7 @@ class BasePipeline:
         worklist_id : str  = "",
         file_type: str = ".nd2",
     ):
-         """Initialize the BasePipeline.
+        """Initialize the BasePipeline.
 
         Args:
             input_path (str): Path to the input directory containing the images.
@@ -236,7 +236,7 @@ class BasePipeline:
                 f"File number {file_list.index(name)+1} of {len(file_list)}"
             )
             file_i = os.path.join(self.input_path, name)
-
+            start_time = time.time()
             self.analyse_image(
                 file_i,
                 name,
@@ -244,6 +244,9 @@ class BasePipeline:
                 export_aligned_image=export_aligned_image,
                 **kwargs,
             )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            self.main_logger.info(f"Job {name} has finished in time {elapsed_time:.2f} seconds")
 
     def process_folder_parallel(
         self,
@@ -292,14 +295,17 @@ class BasePipeline:
             for index, name in enumerate(file_list, start=1):
                 file_i = os.path.join(self.input_path, name)
                 self.main_logger.info(f"Submitting file number {index} of {len(file_list)}")
+                start_time = time.time()
                 future = executor.submit(self.analyse_image, file_i, name, export_labeled_mask, export_aligned_image, **kwargs)
-                futures[future] = (index, name)
+                futures[future] = (index, name, start_time)
 
             for future in concurrent.futures.as_completed(futures):
                 try:
                     with managed_resource(future):
                         result = future.result()
-                        # Process result if needed
+                    index, name, start_time = futures[future]
+                    elapsed_time = end_time - start_time
+                    self.main_logger.info(f"Job {name} has finished in time {elapsed_time:.2f} seconds")
                     gc.collect()  # Force garbage collection after each file
                 except Exception as e:
                     index, name = futures[future]
