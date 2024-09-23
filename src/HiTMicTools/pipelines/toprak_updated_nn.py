@@ -4,13 +4,8 @@ import tifffile
 import pandas as pd
 import numpy as np
 from HiTMicTools.processing_tools import ImagePreprocessor
-from HiTMicTools.roi_analyser import (
-    RoiAnalyser,
-    roi_skewness,
-    roi_std_dev,
-    rod_shape_coef,
-    border_complexity,
-)
+from HiTMicTools.roi_analyser import RoiAnalyser
+from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 from HiTMicTools.workflows import BasePipeline
 from HiTMicTools.utils import (
     get_timestamps,
@@ -19,12 +14,12 @@ from HiTMicTools.utils import (
     get_memory_usage,
     remove_file_extension,
 )
+
 from jetraw_tools.image_reader import ImageReader
 import psutil
 
 
-# TODO: Remove class since the new toprak_updated_nn has replaced this approach.
-class Toprak_updated(BasePipeline):
+class Toprak_updated_nn(BasePipeline):
     def analyse_image(
         self,
         file_i: str,
@@ -146,7 +141,7 @@ class Toprak_updated(BasePipeline):
 
         # 3.1 Segment
         img_logger.info(f"3.1 - Starting segmentation, Memory:{get_memory_usage()}")
-        prob_map = self.image_classifier_args.predict(
+        prob_map = self.image_classifier.predict(
             ip.img[:, 0, reference_channel, :, :]
         )
         img_logger.info(f"3.1 - Segmentation completed! Memory:{get_memory_usage()}")
@@ -164,25 +159,20 @@ class Toprak_updated(BasePipeline):
         # 3.2 Get ROIs
         img_logger.info(f"3.2 - Extracting ROIs, Memory:{get_memory_usage()}")
         img_analyser = RoiAnalyser(ip.img, prob_map, stack_order=("TSCXY", "TCXY"))
+        
+        # Remove image-processor to release space
+        del ip
         img_analyser.create_binary_mask()
         img_analyser.clean_binmask(min_pixel_size=20)
         img_analyser.get_labels()
         img_logger.info(f"{img_analyser.total_rois} objects found")
 
-        # 4. Calc. measurements
+        # 3.3 Classify ROIs
+        img_logger.info(f"3.2 - Classify ROIs, Memory:{get_memory_usage()}")
+        object_classes, labels=self.object_classifier.classify_rois(img_analyser.labeled_mask[:, 0,0], img_analyser.img[:, 0,0])
+        
+        # 4.1 Calc. measurements
         img_logger.info(f"4 - Starting measurements, Memory:{get_memory_usage()}")
-        morphology_prop = [
-            "label",
-            "centroid",
-            "max_intensity",
-            "min_intensity",
-            "mean_intensity",
-            "eccentricity",
-            "solidity",
-            "area",
-            "perimeter",
-            "feret_diameter_max",
-        ]
         fl_prop = [
             "label",
             "centroid",
@@ -191,44 +181,26 @@ class Toprak_updated(BasePipeline):
             "mean_intensity",
             "area",
         ]
-        img_logger.info("Extracting morphological measurements")
-        morpho_measurements = img_analyser.get_roi_measurements(
-            target_channel=0,
-            properties=morphology_prop,
-            extra_properties=(roi_skewness, roi_std_dev, border_complexity, rod_shape_coef),
-            asses_focus=True,
-        )
         img_logger.info("Extracting fluorescent measurements")
         fl_measurements = img_analyser.get_roi_measurements(
             target_channel=1,
             properties=fl_prop,
             extra_properties=(roi_skewness, roi_std_dev),
-            asses_focus=False,
         )
+        fl_measurements["object_class"] = object_classes
+        
         img_logger.info("Extracting time data")
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
         img_logger.info("Extracting background fluorescence intensity")
         #bck_fl = measure_background_intensity(ip.img_original, channel=1)
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
-        morpho_measurements = pd.merge(
-            morpho_measurements, time_data, on="frame", how="left"
-        )
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
         img_logger.info(f"4 - Measurements completed, Memory:{get_memory_usage()}")
 
-        # 4.1 Object classification
-        if self.object_classifier is not None:
-            img_logger.info(f"4.1 - Running object classification, Memory:{get_memory_usage()}")
-            predictions = self.object_classifier.predict(
-                morpho_measurements[self.object_classifier.feature_names_in_]
-            )
-            fl_measurements["object_class"] = predictions
-            morpho_measurements["object_class"] = predictions
-            morpho_measurements['file'] = name
 
-        # 4.2 PI classification
+        # 4.1 PI classification
         if self.pi_classifier is not None:
             img_logger.info(f"4.2 - Running PI classification, Memory:{get_memory_usage()}")
             predictions = self.pi_classifier.predict(
@@ -258,22 +230,59 @@ class Toprak_updated(BasePipeline):
         # 5. Export data
         export_path = os.path.join(self.output_path, name)
         img_logger.info(f"5 - Writing data to {export_path}")
-        morpho_measurements.to_csv(export_path + "_morpho.csv")
+
         fl_measurements.to_csv(export_path + "_fl.csv")
         d_summary.to_csv(export_path + "_summary.csv")
 
         if export_labeled_mask:
-            pmap_8bit = convert_image(img_analyser.proba_map, np.uint8)
-            tifffile.imwrite(export_path + "_labels.tiff", pmap_8bit)
+            class_to_id = {
+                'single-cell': 0,
+                'clump': 1,
+                'noise': 2,
+                'off-focus': 3,
+                'joint-cell': 4
+            }
+
+            # Create a mapping from original label IDs to new class IDs
+            print(labels)
+            label_to_class_id = {label: class_to_id[class_name] + 1 for label, class_name in zip(labels, object_classes)}
+            vectorized_map = np.vectorize(lambda x: label_to_class_id.get(x, 0))
+            new_labeled_mask = vectorized_map(img_analyser.labeled_mask[:, 0, 0])
+            labs_8bit = new_labeled_mask.astype(np.uint8)
+            #labs_8bit = convert_image(img_analyser.labeled_mask[:, 0,0], np.uint8)
+            tifffile.imwrite(export_path + "_labels.tiff", labs_8bit)
         if export_aligned_image:
-            image_8bit = convert_image(ip.img, np.uint8)
+            image_8bit = convert_image(img_analyser.img, np.uint8)
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
 
         img_logger.info(f"Analysis completed for {movie_name}, Memory:{get_memory_usage()}")
-        del prob_map, ip, img, morpho_measurements, fl_measurements, d_summary, img_analyser
+        del prob_map, img, fl_measurements, d_summary, img_analyser
         gc.collect()
         img_logger.info(f"Garbage collection completed, Memory:{get_memory_usage()}")
         
         self.remove_logger(img_logger)
         
         return name
+    
+    def batch_classify_rois(self, img_analyser, batch_size=10):
+        labeled_mask = img_analyser.labeled_mask[:, 0, 0]
+        img = img_analyser.img[:, 0, 0]
+        
+        n_frames = labeled_mask.shape[0]
+        all_object_classes = []
+        all_labels = []
+        
+        for start_frame in range(0, n_frames, batch_size):
+            end_frame = min(start_frame + batch_size, n_frames)
+            
+            # Extract batch of frames
+            batch_labeled_mask = labeled_mask[start_frame:end_frame]
+            batch_img = img[start_frame:end_frame]
+            
+            # Classify the batch
+            batch_classes, batch_labels = self.object_classifier.classify_rois(batch_labeled_mask, batch_img)
+            
+            all_object_classes.extend(batch_classes)
+            all_labels.extend(batch_labels)
+        
+        return all_object_classes, all_labels

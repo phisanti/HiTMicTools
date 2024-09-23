@@ -1,7 +1,18 @@
+# Standard library imports
 import os
-import pandas as pd
-from typing import Any, Tuple, Union, Optional, Dict
+from typing import Any, Dict, Optional, Tuple, Union
+
+# Third-party library imports
+import cv2
 import numpy as np
+import pandas as pd
+from scipy.stats import linregress, skew
+from skimage.measure import find_contours, perimeter
+from skimage.morphology import convex_hull_image, skeletonize
+
+# Type hints
+from numpy.typing import NDArray
+from pandas import DataFrame, Series
 
 
 def summary_by(df: pd.DataFrame, summarise_by: str, variable: str) -> pd.DataFrame:
@@ -218,3 +229,191 @@ def create_array_from_coords_old(
             array[frame, x, y] = 1
 
     return array
+
+
+# Image analysis functions
+def border_complexity(regionmask, intensity):
+    """
+    Calculate the border complexity of a region by comparing the perimeter of the region
+    to the perimeter of its convex hull.
+
+    Parameters:
+    regionmask (ndarray): A boolean mask indicating the region of interest.
+    intensity (ndarray): An array of intensity values (unused in this function).
+
+    Returns:
+    float: The border complexity value, defined as the ratio of the region's perimeter
+           to the perimeter of its convex hull.
+    """
+    try:
+        # Find contours
+        contours = find_contours(regionmask, 0.5)
+        if len(contours) == 0:
+            return 0.0
+
+        # Get perimeter length and convex hull length
+        region_perimeter = perimeter(regionmask)
+        hull = convex_hull_image(regionmask)
+        hull_perimeter = perimeter(hull)
+
+        # Calculate the border complexity
+        if hull_perimeter != 0:
+            border_complexity = region_perimeter / hull_perimeter
+        else:
+            border_complexity = 1.0
+    except Exception:
+        border_complexity = 0.0
+
+    return border_complexity
+
+
+## Auxiliary functions
+def rod_shape_coef(regionmask, intensity):
+    """
+    Skeletonize the region mask, perform a fast linear regression, and return the R-squared value.
+
+    Parameters:
+    regionmask (ndarray): A boolean mask indicating the region of interest.
+    intensity (ndarray): An array of intensity values (unused in this function).
+
+    Returns:
+    float: The R-squared value of the linear regression on the skeletonized region.
+    """
+    # Get skeletopn coords
+    skeleton = skeletonize(regionmask)
+    y, x = np.where(skeleton)
+
+    if len(x) < 2:
+        return 0.0
+
+    if np.all(x == x[0]):
+        return 1.0
+
+    # Calculate the R-squared value
+    try:
+        slope, intercept, r_value, p_value, std_err = linregress(x, y)
+        r_squared = r_value**2
+    except ValueError:
+        r_squared = 0
+
+    return r_squared
+
+
+def coords_centroid(coords):
+    centroid = np.mean(coords, axis=0)
+    return pd.Series(centroid, index=["slice", "y", "x"])
+
+
+def quartiles(regionmask, intensity):
+    """
+    Calculate the quartiles of the given intensity values within the specified region mask.
+
+    Parameters:
+    regionmask (ndarray): A boolean mask indicating the region of interest.
+    intensity (ndarray): An array of intensity values.
+
+    Returns:
+    ndarray: An array containing the 25th, 50th, and 75th percentiles of the intensity values within the region mask.
+    """
+    return np.percentile(intensity[regionmask], q=(25, 50, 75))
+
+
+def roi_skewness(regionmask, intensity):
+    """
+    Calculate the skewness of pixel intensities within a region of interest (ROI).
+
+    Parameters:
+    regionmask (numpy.ndarray): A binary mask defining the ROI.
+    intensity (numpy.ndarray): The intensity image.
+
+    Returns:
+    float: The skewness of pixel intensities within the ROI.
+    """
+    roi_intensities = intensity[regionmask]
+
+    try:
+        # Check if there are enough unique values in roi_intensities
+        unique_values = np.unique(roi_intensities)
+        if len(unique_values) < 10:
+            return 0
+
+        return skew(roi_intensities, bias=False)
+    except Exception:
+        return 0
+
+
+def roi_std_dev(regionmask, intensity):
+    """
+    Calculate the standard deviation of pixel intensities within a region of interest (ROI).
+
+    Parameters:
+    regionmask (numpy.ndarray): A binary mask defining the ROI.
+    intensity (numpy.ndarray): The intensity image.
+
+    Returns:
+    float: The standard deviation of pixel intensities within the ROI.
+    """
+    roi_intensities = intensity[regionmask]
+    return np.std(roi_intensities)
+
+
+def laplacian(image):
+    """
+    Compute the Laplacian of the image and then return the focus
+    measure, which is simply the variance of the Laplacian.
+    """
+    image = np.float32(image)
+
+    # Check the data type of the image
+    if image.dtype == np.float32:
+        ddepth = cv2.CV_32F
+    elif image.dtype == np.float64:
+        ddepth = cv2.CV_64F
+    else:
+        raise ValueError(f"Unsupported image data type: {image.dtype}")
+
+    return cv2.Laplacian(image, ddepth)
+
+
+def variance_filter(image, kernel_size):
+    # Convert the image to float32
+    image = np.float32(image)
+
+    # Calculate the mean of the image
+    mean = cv2.blur(image, (kernel_size, kernel_size))
+    mean_sqr = cv2.blur(np.square(image), (kernel_size, kernel_size))
+
+    # Calculate the variance
+    variance = mean_sqr - np.square(mean)
+
+    return variance
+
+
+def dilated_measures(regionmask, intensity, structure=np.ones((5, 5)), iterations=1):
+    """
+    Calculate the standard deviation of pixel intensities within a region of interest (ROI).
+
+    Parameters:
+    regionmask (numpy.ndarray): A binary mask defining the ROI.
+    intensity (numpy.ndarray): The intensity image.
+    structure (numpy.ndarray): The structuring element used for dilation.
+    iterations (int): The number of times dilation is applied.
+
+    Returns:
+    float: The standard deviation of pixel intensities within the ROI.
+    """
+    # Ensure regionmask is an 8-bit, single-channel image
+    regionmask = regionmask.astype(np.uint8)
+
+    # Dilate the regionmask
+    dilated_regionmask = cv2.dilate(regionmask, structure, iterations=iterations)
+
+    # Get the intensities within the dilated ROI
+    roi_intensities = intensity[dilated_regionmask > 0]
+    std_px = np.std(roi_intensities)
+    mean_px = np.mean(roi_intensities)
+    min_px = np.min(roi_intensities)
+    max_px = np.max(roi_intensities)
+    pixel_area = np.sum(dilated_regionmask > 0)
+
+    return (std_px, mean_px, min_px, max_px, pixel_area)

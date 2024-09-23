@@ -1,14 +1,18 @@
-import numpy as np
-import itertools
+# Standard library imports
+import re
 import json
+import platform
+import itertools
+from datetime import timedelta
+from typing import List, Union, Dict, Any
+
+# Third-party imports
+import numpy as np
 import pandas as pd
 import ome_types
 import psutil
 import GPUtil
-import platform
-import re
-from datetime import timedelta
-from typing import List, Union, Dict, Any
+import torch
 
 
 def remove_file_extension(filename: str) -> str:
@@ -283,6 +287,35 @@ def read_metadata(metadata_file: str) -> Dict[str, Any]:
     return metadata
 
 
+def empty_gpu_cache(device: torch.device) -> None:
+    """
+    Clear the GPU cache.
+
+    Args:
+        device (torch.device): The device to clear the cache for.
+    """
+    # Clear the GPU cache
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
+
+
+def get_device() -> torch.device:
+    """
+    Detects the available GPU device.
+
+    Returns:
+        torch.device: The device to be used for inference.
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+
+
 def get_memory_usage() -> str:
     """
     Get the current memory usage of the process.
@@ -293,6 +326,38 @@ def get_memory_usage() -> str:
     process = psutil.Process()
     memory_info = process.memory_info()
     return f"{memory_info.rss / (1024 * 1024):.2f} MB"
+
+
+def get_device_memory_usage(free: bool = False, unit: str = 'MB') -> float:
+    """
+    Get the current memory usage or free memory for the active PyTorch device (CUDA, MPS, or CPU).
+    
+    Args:
+        free (bool): If True, return free memory. If False, return used memory. Defaults to False.
+        unit (str): Unit for memory measurement. Either 'MB' or 'GB'. Defaults to 'MB'.
+    
+    Returns:
+        float: Memory usage or free memory in specified units.
+    """
+    if unit not in ['MB', 'GB']:
+        raise ValueError("Unit must be either 'MB' or 'GB'")
+    
+    divisor = 1024 * 1024 if unit == 'MB' else 1024 * 1024 * 1024
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        if free:
+            memory_free = torch.cuda.get_device_properties(device).total_memory - torch.cuda.memory_allocated(device)
+            return memory_free / divisor
+        else:
+            return torch.cuda.memory_allocated(device) / divisor
+    else:
+        # For both CPU and MPS (Apple Silicon), we use system memory
+        system_memory = psutil.virtual_memory()
+        if free:
+            return system_memory.available / divisor
+        else:
+            return (system_memory.total - system_memory.available) / divisor
 
 
 def get_system_info() -> str:

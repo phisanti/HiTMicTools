@@ -20,7 +20,7 @@ from HiTMicTools.utils import (
 from jetraw_tools.image_reader import ImageReader
 import psutil
 
-
+# TODO: Remove class since the new toprak_updated_nn has replaced this approach.
 class analysis_e022_sttl(BasePipeline):
     def analyse_image(
         self,

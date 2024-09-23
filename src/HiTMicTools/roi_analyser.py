@@ -1,199 +1,23 @@
+# Standard library imports
 import json
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+# Third-party library imports
 import numpy as np
 import pandas as pd
-import cv2
-from scipy.ndimage import label, sum_labels
-from scipy.stats import skew, linregress
-from scipy.spatial.distance import pdist
-from skimage.morphology import skeletonize
+from scipy.ndimage import label 
 from skimage.measure import regionprops_table
+
+# Local imports
 from HiTMicTools.utils import adjust_dimensions, stack_indexer
 
-
-def border_complexity(regionmask, intensity):
-    """
-    Calculate the border complexity of a region by comparing the perimeter of the region
-    to the perimeter of its convex hull.
-
-    Parameters:
-    regionmask (ndarray): A boolean mask indicating the region of interest.
-    intensity (ndarray): An array of intensity values (unused in this function).
-
-    Returns:
-    float: The border complexity value, defined as the ratio of the region's perimeter
-           to the perimeter of its convex hull.
-    """
-    try:
-        contours, _ = cv2.findContours(
-            regionmask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        # Get perimeter length and convex hull length
-        perimeter = cv2.arcLength(contours[0], True)
-        hull = cv2.convexHull(contours[0])
-        hull_perimeter = cv2.arcLength(hull, True)
-
-        # Calculate the border complexity
-        if hull_perimeter != 0:
-            border_complexity = perimeter / hull_perimeter
-        else:
-            border_complexity = 1.0
-    except ValueError:
-        border_complexity = 0.0
-
-    return border_complexity
-
-
-## Auxiliary functions
-def rod_shape_coef(regionmask, intensity):
-    """
-    Skeletonize the region mask, perform a fast linear regression, and return the R-squared value.
-
-    Parameters:
-    regionmask (ndarray): A boolean mask indicating the region of interest.
-    intensity (ndarray): An array of intensity values (unused in this function).
-
-    Returns:
-    float: The R-squared value of the linear regression on the skeletonized region.
-    """
-    # Get skeletopn coords
-    skeleton = skeletonize(regionmask)
-    y, x = np.where(skeleton)
-
-    if len(x) < 2:
-        return 0.0
-
-    if np.all(x == x[0]):
-        return 1.0
-
-    # Calculate the R-squared value
-    try:
-        slope, intercept, r_value, p_value, std_err = linregress(x, y)
-        r_squared = r_value**2
-    except ValueError:
-        r_squared = 0
-
-    return r_squared
-
+# Type hints
+from numpy.typing import NDArray
+from pandas import DataFrame, Series
 
 def coords_centroid(coords):
     centroid = np.mean(coords, axis=0)
     return pd.Series(centroid, index=["slice", "y", "x"])
-
-
-def quartiles(regionmask, intensity):
-    """
-    Calculate the quartiles of the given intensity values within the specified region mask.
-
-    Parameters:
-    regionmask (ndarray): A boolean mask indicating the region of interest.
-    intensity (ndarray): An array of intensity values.
-
-    Returns:
-    ndarray: An array containing the 25th, 50th, and 75th percentiles of the intensity values within the region mask.
-    """
-    return np.percentile(intensity[regionmask], q=(25, 50, 75))
-
-
-def roi_skewness(regionmask, intensity):
-    """
-    Calculate the skewness of pixel intensities within a region of interest (ROI).
-
-    Parameters:
-    regionmask (numpy.ndarray): A binary mask defining the ROI.
-    intensity (numpy.ndarray): The intensity image.
-
-    Returns:
-    float: The skewness of pixel intensities within the ROI.
-    """
-    roi_intensities = intensity[regionmask]
-
-    try:
-        # Check if there are enough unique values in roi_intensities
-        unique_values = np.unique(roi_intensities)
-        if len(unique_values) < 10:
-            return 0
-
-        return skew(roi_intensities, bias=False)
-    except Exception:
-        return 0
-
-
-def roi_std_dev(regionmask, intensity):
-    """
-    Calculate the standard deviation of pixel intensities within a region of interest (ROI).
-
-    Parameters:
-    regionmask (numpy.ndarray): A binary mask defining the ROI.
-    intensity (numpy.ndarray): The intensity image.
-
-    Returns:
-    float: The standard deviation of pixel intensities within the ROI.
-    """
-    roi_intensities = intensity[regionmask]
-    return np.std(roi_intensities)
-
-
-def laplacian(image):
-    """
-    Compute the Laplacian of the image and then return the focus
-    measure, which is simply the variance of the Laplacian.
-    """
-    image = np.float32(image)
-
-    # Check the data type of the image
-    if image.dtype == np.float32:
-        ddepth = cv2.CV_32F
-    elif image.dtype == np.float64:
-        ddepth = cv2.CV_64F
-    else:
-        raise ValueError(f"Unsupported image data type: {image.dtype}")
-
-    return cv2.Laplacian(image, ddepth)
-
-
-def variance_filter(image, kernel_size):
-    # Convert the image to float32
-    image = np.float32(image)
-
-    # Calculate the mean of the image
-    mean = cv2.blur(image, (kernel_size, kernel_size))
-    mean_sqr = cv2.blur(np.square(image), (kernel_size, kernel_size))
-
-    # Calculate the variance
-    variance = mean_sqr - np.square(mean)
-
-    return variance
-
-
-def dilated_measures(regionmask, intensity, structure=np.ones((5, 5)), iterations=1):
-    """
-    Calculate the standard deviation of pixel intensities within a region of interest (ROI).
-
-    Parameters:
-    regionmask (numpy.ndarray): A binary mask defining the ROI.
-    intensity (numpy.ndarray): The intensity image.
-    structure (numpy.ndarray): The structuring element used for dilation.
-    iterations (int): The number of times dilation is applied.
-
-    Returns:
-    float: The standard deviation of pixel intensities within the ROI.
-    """
-    # Ensure regionmask is an 8-bit, single-channel image
-    regionmask = regionmask.astype(np.uint8)
-
-    # Dilate the regionmask
-    dilated_regionmask = cv2.dilate(regionmask, structure, iterations=iterations)
-
-    # Get the intensities within the dilated ROI
-    roi_intensities = intensity[dilated_regionmask > 0]
-    std_px = np.std(roi_intensities)
-    mean_px = np.mean(roi_intensities)
-    min_px = np.min(roi_intensities)
-    max_px = np.max(roi_intensities)
-    pixel_area = np.sum(dilated_regionmask > 0)
-
-    return (std_px, mean_px, min_px, max_px, pixel_area)
 
 
 def convert_to_list_and_dump(row):
@@ -275,7 +99,6 @@ class RoiAnalyser:
         target_slice=0,
         properties=["label", "centroid", "mean_intensity"],
         extra_properties=None,
-        asses_focus=True,
     ):
         """
         Get measurements for each ROI in the labeled mask for a specific channel and all frames.
@@ -312,46 +135,6 @@ class RoiAnalyser:
                 extra_properties=extra_properties,
             )
             roi_properties_df = pd.DataFrame(roi_properties)
-
-            if asses_focus:
-                var_colnames = {
-                    "mean_intensity": "mean_0",
-                    "dilated_measures_0": "std",
-                    "dilated_measures_1": "mean",
-                    "dilated_measures_2": "min",
-                    "dilated_measures_3": "max",
-                    "dilated_measures_4": "area",
-                }
-                var_img = variance_filter(img_frame, 10)
-                lap_im = laplacian(img_frame)
-
-                roi_var = regionprops_table(
-                    labeled_mask_frame,
-                    intensity_image=var_img,
-                    properties=["mean_intensity"],
-                    extra_properties=(dilated_measures,),
-                    separator="_",
-                )
-                roi_lap = regionprops_table(
-                    labeled_mask_frame,
-                    intensity_image=lap_im,
-                    properties=["mean_intensity"],
-                    extra_properties=(dilated_measures,),
-                    separator="_",
-                )
-                roi_var = pd.DataFrame(roi_var)
-                roi_lap = pd.DataFrame(roi_lap)
-                roi_lap.columns = [
-                    "lap_" + var_colnames.get(col, col) for col in roi_lap.columns
-                ]
-                roi_var.columns = [
-                    "var_" + var_colnames.get(col, col) for col in roi_var.columns
-                ]
-
-                roi_properties_df = pd.concat(
-                    [roi_properties_df, roi_var, roi_lap], axis=1
-                )
-
             roi_properties_df["frame"] = frame
             roi_properties_df["slice"] = target_channel
             roi_properties_df["channel"] = target_slice

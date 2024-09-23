@@ -6,7 +6,8 @@ import logging
 from logging.handlers import MemoryHandler
 import concurrent.futures
 from typing import List, Dict, Optional, Union
-from HiTMicTools.segmentation_model import Segmentator
+from HiTMicTools.model_components.segmentation_model import Segmentator
+from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.utils import get_system_info
 import gc
 from contextlib import contextmanager
@@ -24,25 +25,31 @@ class BasePipeline:
     """
     A class for performing standard analysis on microscopy images.
 
-    Args:
-        input_path (str): Path to the input directory containing the images.
-        output_path (str): Path to the output directory for saving the analysis results.
-        image_classifier_args (Dict[str, Union[str, int, float, bool]]): Arguments for the image segmentation model.
-        object_classifier (str): Path to the classifier for object classification.
-        pi_classifier (str): Path to the classifier for PiPOS/PiNEG (Propidium Iodide) classification.
-        file_type (str, optional): File extension of the image files. Defaults to '.nd2'.
+    Methods:
+        setup_logger: Set up a logger for logging the analysis progress.
+        remove_logger: Remove logger, useful for concurrent parallel processing.
+        load_model: Load a model based on the specified model type.
+        config_image_analysis: Configure the image analysis settings.
+        get_files: Retrieve a list of files from the specified input path, filtered by pattern and extension.
+        process_folder: Process all files with the matching pattern and file extension in the input folder.
+        process_folder_parallel: Process multiple image files in parallel using multiprocessing.
     """
 
     def __init__(
         self,
         input_path: str,
         output_path: str,
-        image_classifier_args: Dict[str, Union[str, int, float, bool]],
-        object_classifier: str,
-        pi_classifier: str,
         worklist_id : str  = "",
         file_type: str = ".nd2",
     ):
+         """Initialize the BasePipeline.
+
+        Args:
+            input_path (str): Path to the input directory containing the images.
+            output_path (str): Path to the output directory for saving the analysis results.
+            worklist_id (str, optional): Identifier for the worklist. Defaults to "".
+            file_type (str, optional): File extension of the image files. Defaults to '.nd2'.
+        """
         last_folder = os.path.basename(os.path.normpath(input_path))
         self.main_logger = self.setup_logger(
             output_path, last_folder, logger_id = worklist_id, print_output=True
@@ -53,9 +60,6 @@ class BasePipeline:
 
         self.output_path = output_path
         self.file_type = file_type
-        self.image_classifier_args = self.add_segmentator(image_classifier_args)
-        self.object_classifier = self.add_classifier(object_classifier)
-        self.pi_classifier = self.add_classifier(pi_classifier)
 
     def setup_logger(
         self, output_path: str, name: str, logger_id : str = "", print_output: bool = False
@@ -95,23 +99,38 @@ class BasePipeline:
         # Delete the logger instance
         del logging.Logger.manager.loggerDict[logger.name]
 
-    @staticmethod
-    def add_segmentator(
-        classifier_args: Dict[str, Union[str, int, float, bool]],
-    ) -> Segmentator:
-        """Attach segmentator class for pixel classification."""
-        return Segmentator(**classifier_args)
+    def load_model(self, 
+                  model_type: str, 
+                  model_path: str, 
+                  model_graph: Optional[str] = None, 
+                  **kwargs):
+        """
+        Load a model based on the specified model type.
 
-    @staticmethod
-    def add_classifier(model_path: Optional[str]):
-        """Load a classifier model from a file."""
-        if model_path is None:
-            classifier = None
-        else:
+        Args:
+            model_type (str): Type of the model to load ('segmentator', 'cell-classifier', 'fl-classifier').
+            model_path (str): Path to the model file.
+            model_args (str, optional): Graph with the model architecture. Required for 'segmentator' and 'cell-classifier'.
+            **kwargs: Additional keyword arguments for the model.
+
+        Returns:
+            The loaded model object.
+
+        Raises:
+            ValueError: If an invalid model type is provided or required arguments are missing.
+        """
+        if model_type == 'segmentator':
+            self.image_classifier = Segmentator(model_path, model_graph, **kwargs)
+        
+        elif model_type == 'cell-classifier':
+            self.object_classifier=CellClassifier(model_path, model_graph, **kwargs)
+        
+        elif model_type == 'pi-classifier':
             with open(model_path, "rb") as file:
-                classifier = joblib.load(file)
-
-        return classifier
+                self.pi_classifier = joblib.load(file)
+        
+        else:
+            raise ValueError(f"Invalid model type: {model_type}")
 
     def config_image_analysis(
         self,
@@ -119,7 +138,14 @@ class BasePipeline:
         align_frames: bool = False,
         method: str = "basicpy",
     ) -> None:
-        """Configure the image analysis settings."""
+        """
+        Configure the image analysis settings.
+
+        Args:
+            reference_channel (int): The reference channel for image analysis.
+            align_frames (bool, optional): Whether to align frames. Defaults to False.
+            method (str, optional): The method to use for image analysis. Defaults to "basicpy".
+        """
         self.reference_channel = reference_channel
         self.align_frames = align_frames
         self.method = method
@@ -162,7 +188,7 @@ class BasePipeline:
                 full_path=os.path.join(output_folder, os.path.splitext(file_i)[0])
                 if all(
                     os.path.exists(full_path + ext)
-                    for ext in ["_morpho.csv", "_fl.csv"]
+                    for ext in ["_summary.csv", "_fl.csv"]
                 ):
                     file_list.remove(file_i)
                     self.main_logger.info(f"File {file_i} already analysed. Skipping.")
