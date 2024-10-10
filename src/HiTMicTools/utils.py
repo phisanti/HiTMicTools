@@ -234,7 +234,7 @@ def get_timestamps(
     for i in range(len(z)):
         timestamp = z[i].delta_t
         if z[i].the_c == ref_channel:
-            timepoint = base_time + timedelta(seconds=timestamp)
+            timepoint = base_time + timedelta(milliseconds=timestamp)
             formatted_timepoint = timepoint.strftime(timeformat)
             timestep = timestamp
 
