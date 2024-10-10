@@ -1,11 +1,10 @@
 import os
 import gc
 import tifffile
+import torch
 import pandas as pd
 import numpy as np
 from HiTMicTools.processing_tools import ImagePreprocessor
-from HiTMicTools.roi_analyser import RoiAnalyser
-from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 from HiTMicTools.workflows import BasePipeline
 from HiTMicTools.utils import (
     get_timestamps,
@@ -13,7 +12,28 @@ from HiTMicTools.utils import (
     convert_image,
     get_memory_usage,
     remove_file_extension,
+    get_device,
+    empty_gpu_cache,
 )
+from HiTMicTools.roi_analyser import RoiAnalyser
+from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
+
+# TODO: Currently, I can use the cupy based ROI analyser, but performance is lagging.
+# I will start working with the CPU-based ROI analyser and slowly move to the GPU-based. 
+#if get_device() == torch.device("cuda"):
+#    from HiTMicTools.roi_analyser_gpu import RoiAnalyser, roi_skewness, roi_std_dev
+#    import GPUtil
+#    print('using CUDA based ROI analyser')
+#
+#    from HiTMicTools.roi_analyser import RoiAnalyser
+#    from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
+#    print('using CPU based ROI analyser')
+#
+#else:
+#    print('using CPU based ROI analyser')
+#    from HiTMicTools.roi_analyser import RoiAnalyser
+#    from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
+
 
 from jetraw_tools.image_reader import ImageReader
 import psutil
@@ -31,6 +51,10 @@ class Toprak_updated_nn(BasePipeline):
 
 
         # 1. Read Image:
+        is_cuda = get_device() == torch.device("cuda")
+        if is_cuda:
+            import GPUtil
+            gpu=GPUtil.getGPUs()[0]
         movie_name = remove_file_extension(name)
         name = movie_name
         img_logger = self.setup_logger(self.output_path, movie_name)
@@ -140,11 +164,14 @@ class Toprak_updated_nn(BasePipeline):
         ip.img_original=np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment
-        img_logger.info(f"3.1 - Starting segmentation, Memory:{get_memory_usage()}")
+        if is_cuda:
+            img_logger.info(f"3.1 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
         prob_map = self.image_classifier.predict(
             ip.img[:, 0, reference_channel, :, :]
         )
         img_logger.info(f"3.1 - Segmentation completed! Memory:{get_memory_usage()}")
+        if is_cuda:
+            img_logger.info(f"3.1 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
 
         # Get ROIs
         if prob_map.ndim > 3 and prob_map.shape[1] > 1:
@@ -169,8 +196,13 @@ class Toprak_updated_nn(BasePipeline):
 
         # 3.3 Classify ROIs
         img_logger.info(f"3.2 - Classify ROIs, Memory:{get_memory_usage()}")
-        object_classes, labels=self.object_classifier.classify_rois(img_analyser.labeled_mask[:, 0,0], img_analyser.img[:, 0,0])
-        
+        if is_cuda:
+            img_logger.info(f"3.2 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
+        #object_classes, labels=self.object_classifier.classify_rois(img_analyser.labeled_mask[:, 0,0], img_analyser.img[:, 0,0])
+        object_classes, labels=self.batch_classify_rois(img_analyser, batch_size=5)
+        if is_cuda:
+            img_logger.info(f"3.2 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
+                
         # 4.1 Calc. measurements
         img_logger.info(f"4 - Starting measurements, Memory:{get_memory_usage()}")
         fl_prop = [
@@ -246,7 +278,6 @@ class Toprak_updated_nn(BasePipeline):
             vectorized_map = np.vectorize(lambda x: label_to_class_id.get(x, 0))
             new_labeled_mask = vectorized_map(img_analyser.labeled_mask[:, 0, 0])
             labs_8bit = new_labeled_mask.astype(np.uint8)
-            #labs_8bit = convert_image(img_analyser.labeled_mask[:, 0,0], np.uint8)
             tifffile.imwrite(export_path + "_labels.tiff", labs_8bit)
         if export_aligned_image:
             image_8bit = convert_image(img_analyser.img, np.uint8)
@@ -255,15 +286,16 @@ class Toprak_updated_nn(BasePipeline):
         img_logger.info(f"Analysis completed for {movie_name}, Memory:{get_memory_usage()}")
         del prob_map, img, fl_measurements, d_summary, img_analyser
         gc.collect()
+        empty_gpu_cache(get_device())
         img_logger.info(f"Garbage collection completed, Memory:{get_memory_usage()}")
         
         self.remove_logger(img_logger)
         
         return name
     
-    def batch_classify_rois(self, img_analyser, batch_size=10):
-        labeled_mask = img_analyser.labeled_mask[:, 0, 0]
-        img = img_analyser.img[:, 0, 0]
+    def batch_classify_rois(self, img_analyser, batch_size=5):
+        labeled_mask = img_analyser.labeled_mask[:, 0, 0]#.get()
+        img = img_analyser.img[:, 0, 0]#.get()
         
         n_frames = labeled_mask.shape[0]
         all_object_classes = []
