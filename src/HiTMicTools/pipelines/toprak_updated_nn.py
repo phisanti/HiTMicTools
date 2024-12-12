@@ -239,12 +239,13 @@ class Toprak_updated_nn(BasePipeline):
             fl_measurements["pi_class"] = predictions
             fl_measurements['file'] = name
             try:
-                d_summary = fl_measurements.groupby(['file', 'frame', 'channel', 'date_time', 'timestep', 'object_class']).agg(
+                d_summary = fl_measurements.groupby(['file', 'frame', 'channel', 'date_time', 'timestep', 'abslag_in_s', 'object_class']).agg(
                     total_count=('label', 'count'),
                     pi_class_neg=('pi_class', lambda x: (x == 'piNEG').sum()),
                     pi_class_pos=('pi_class', lambda x: (x == 'piPOS').sum()),
                     area_pineg=('area', lambda x: x[fl_measurements.loc[x.index, 'pi_class'] == 'piNEG'].sum()),
-                    area_pipos=('area', lambda x: x[fl_measurements.loc[x.index, 'pi_class'] == 'piPOS'].sum())
+                    area_pipos=('area', lambda x: x[fl_measurements.loc[x.index, 'pi_class'] == 'piPOS'].sum()),
+                    area_total=('area', 'sum'),
                 ).reset_index()
 
                 img_logger.info(f"Groupby operation completed successfully. Shape of d_summary: {d_summary.shape}")
