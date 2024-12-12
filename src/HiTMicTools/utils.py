@@ -229,17 +229,18 @@ def get_timestamps(
     """
     base_time = metadata.images[0].acquisition_date
     z = metadata.images[0].pixels.planes
-
+    base_lag = z[0].delta_t
     timestamps = []
     for i in range(len(z)):
         timestamp = z[i].delta_t
         if z[i].the_c == ref_channel:
-            timepoint = base_time + timedelta(milliseconds=timestamp)
+            delta_t_s = timestamp / 1000
+            timepoint = base_time + timedelta(milliseconds=timestamp) - timedelta(milliseconds=base_lag)
             formatted_timepoint = timepoint.strftime(timeformat)
             timestep = timestamp
 
             timestamps.append(
-                {"frame": z[i].the_t, "date_time": formatted_timepoint, "timestep": timestep}
+                {"frame": z[i].the_t, "date_time": formatted_timepoint, "timestep": timestep, "abslag_in_s": delta_t_s}
             )
         else:
             continue
