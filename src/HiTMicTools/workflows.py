@@ -9,6 +9,7 @@ import concurrent.futures
 from typing import List, Dict, Optional, Union
 from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
+from HiTMicTools.model_components.focus_restorer import FocusRestorer
 from HiTMicTools.utils import get_system_info
 import gc
 from contextlib import contextmanager
@@ -109,7 +110,7 @@ class BasePipeline:
         Load a model based on the specified model type.
 
         Args:
-            model_type (str): Type of the model to load ('segmentator', 'cell-classifier', 'fl-classifier').
+            model_type (str): Type of the model to load ('segmentator', 'cell-classifier', 'fl-focus-restorer', 'bf-focus-restorer', 'pi-classifier').
             model_path (str): Path to the model file.
             model_args (str, optional): Graph with the model architecture. Required for 'segmentator' and 'cell-classifier'.
             **kwargs: Additional keyword arguments for the model.
@@ -122,10 +123,14 @@ class BasePipeline:
         """
         if model_type == 'segmentator':
             self.image_classifier = Segmentator(model_path, model_graph, **kwargs)
-        
+        if model_type == 'segmentator2':
+            self.image_segmentator = Segmentator(model_path, model_graph, **kwargs)
         elif model_type == 'cell-classifier':
             self.object_classifier=CellClassifier(model_path, model_graph, **kwargs)
-        
+        elif model_type == 'focus-restorer-fl':
+            self.fl_focus_restorer=FocusRestorer(model_path, model_graph, **kwargs)
+        elif model_type == 'focus-restorer-bf':
+            self.bf_focus_restorer=FocusRestorer(model_path, model_graph, **kwargs)
         elif model_type == 'pi-classifier':
             with open(model_path, "rb") as file:
                 self.pi_classifier = joblib.load(file)
@@ -137,7 +142,7 @@ class BasePipeline:
         self,
         reference_channel: int,
         align_frames: bool = False,
-        method: str = "basicpy",
+        method: str = "basicpy_fl",
     ) -> None:
         """
         Configure the image analysis settings.
@@ -150,6 +155,33 @@ class BasePipeline:
         self.reference_channel = reference_channel
         self.align_frames = align_frames
         self.method = method
+
+    def load_config_dict(self, config_dict: Dict) -> None:
+        """Configure image analysis settings from a dictionary.
+        
+        Args:
+            config_dict: Dictionary containing configuration parameters
+            
+        Raises:
+            ValueError: If required keys are missing or have invalid types
+        """
+        required_keys = {
+            'reference_channel': int,
+            'align_frames': bool, 
+            'method': str
+        }
+        
+        # Validate required keys and types
+        for key, expected_type in required_keys.items():
+            if key not in config_dict:
+                raise ValueError(f"Missing required key: {key}")
+            if not isinstance(config_dict[key], expected_type):
+                raise ValueError(f"Invalid type for {key}. Expected {expected_type}")
+                
+        # Set attributes
+        for key, value in config_dict.items():
+            setattr(self, key, value)
+
 
     def get_files(self, input_path: str, output_folder: str, file_list: str = None, pattern: str = None, no_reanalyse: bool = True) -> List[str]:
         """
