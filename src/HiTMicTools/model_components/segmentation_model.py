@@ -1,12 +1,10 @@
 import torch
-import gc
-import cv2
 import numpy as np
-from typing import Any, Tuple, Optional
+from typing import Any
 from monai.inferers import SlidingWindowInferer
 from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.model_components.image_scaler import ImageScaler
-from HiTMicTools.utils import get_device, empty_gpu_cache
+from HiTMicTools.utils import get_device
 
 class Segmentator(BaseModel):
     """
@@ -134,7 +132,6 @@ class Segmentator(BaseModel):
 
         # Free up tensors
         del img_tensor, image
-        gc.collect()
-        empty_gpu_cache(self.device)
-
+        self.cleanup()
+        
         return output_mask
