@@ -14,7 +14,7 @@ from monai.networks.blocks import Convolution, ResidualUnit
 
 # Local imports
 from HiTMicTools.model_components.base_model import BaseModel
-from HiTMicTools.utils import empty_gpu_cache, get_device
+from HiTMicTools.utils import get_device
 
 # Type hints
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -109,8 +109,8 @@ class CellClassifier(BaseModel):
             class_indices = class_indices.cpu().numpy()
         
         del preprocessed_rois, labeled_image, source_image, classifications
-        gc.collect()
-        empty_gpu_cache(self.device)
+
+        self.cleanup()
         
         return (class_names, labels) if output_type == 'class-str' else (class_indices, labels)
     
