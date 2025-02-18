@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 from typing import Tuple, Optional
+from HiTMicTools.utils import empty_gpu_cache, get_device
+import gc
 
 class BaseModel:
     """
@@ -37,6 +39,10 @@ class BaseModel:
             RuntimeError: If an error occurs while loading the model.
             Exception: If an unexpected error occurs.
         """
+
+        if device is None:
+            device = get_device()
+
         try:
             if model_graph is None:
                 model = torch.load(path, map_location=device)
@@ -65,9 +71,30 @@ class BaseModel:
 
         except Exception as e:
             raise Exception(f"Unexpected error occurred: {str(e)}")
+        
 
     @staticmethod
-    def ensure_4d(
+    def ensure_4d(self, img, is_3D) -> Tuple:
+        """
+        Ensures that the input image has 4 dimensions (batch, channel, height, width).
+
+        Args:
+            img (np.ndarray or torch.Tensor): The input image.
+            is_3D (bool): Whether the image is a 3D volume or a 2D image.
+
+        Returns:
+            Tuple[np.ndarray or torch.Tensor, Optional[Tuple[int, int]]]: A tuple containing the image with 4 dimensions and a tuple of the indexes of the added dimensions (or None if no dimensions were added).
+        """
+        if isinstance(img, np.ndarray):
+            return self.ensure_4d_np(img, is_3D)
+        elif isinstance(img, torch.Tensor):
+            return self.ensure_4d_torch(img, is_3D)
+        else:
+            raise TypeError(f"Unsupported data type: {type(img)}")
+
+
+    @staticmethod
+    def ensure_4d_np(
         img: np.ndarray, is_3D: bool
     ) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:
         """
@@ -103,3 +130,44 @@ class BaseModel:
             )
 
         return img, added_dim_indexes
+
+    @staticmethod
+    def ensure_4d_torch(self, img: torch.Tensor, is_3D: bool) -> Tuple[torch.Tensor, Optional[Tuple[int, int]]]:
+        """
+        Ensures that the input image has 4 dimensions (batch, channel, height, width).
+        This is the standard format expected by PyTorch models.
+        
+        Args:
+            img (torch.Tensor): The input image tensor.
+            is_3D (bool): Whether the image is a 3D volume or a 2D image.
+        
+        Returns:
+            Tuple[torch.Tensor, Optional[Tuple[int, int]]]: A tuple containing the image tensor with 4 dimensions and a tuple of the indexes of the added dimensions (or None if no dimensions were added).
+        """
+        added_dim_indexes = None
+        if img.ndim == 2:
+            # Add channel and batch dimensions if the tensor is 2D
+            img = img.unsqueeze(0).unsqueeze(0)
+            added_dim_indexes = (0, 1)
+        elif img.ndim == 3 and is_3D:
+            # Add a channel dimension if the tensor is multi-stack
+            img = img.unsqueeze(0)
+            added_dim_indexes = (0,)
+        elif img.ndim == 3 and not is_3D:
+            # Add a batch dimension if the tensor is multi-channel
+            img = img.unsqueeze(0)
+            added_dim_indexes = (0,)
+        elif img.ndim == 4:
+            # No modification needed if the tensor is already 4D
+            pass
+        else:
+            raise ValueError(
+                f"Unsupported tensor dimensions: {img.ndim}, current shape is {img.shape}"
+            )
+        
+        return img, added_dim_indexes
+
+
+    def cleanup(self):
+        gc.collect()
+        empty_gpu_cache(self.device)
