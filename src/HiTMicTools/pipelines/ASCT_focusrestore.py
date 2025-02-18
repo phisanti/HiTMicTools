@@ -163,7 +163,16 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Intensity after focus restoration:\n{np.round(mean_intensity_2, 3)}"
         )
-
+        # 2.3 Scale reference channel so that it works with previous classifer (relies on z-scaled images)
+        mean_intensity_3 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
+        img_logger.info(
+            f"Intensity before channel intensity scaling:\n{np.round(mean_intensity_3, 3)}"
+        )
+        ip.scale_channel(range(nFrames), 0, nchannels=0)
+        mean_intensity_2 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
+        img_logger.info(
+            f"Intensity after channel intensity scaling:\n{np.round(mean_intensity_2, 3)}"
+        )
 
         # 2.3 Align frames if required
         if align_frames:
