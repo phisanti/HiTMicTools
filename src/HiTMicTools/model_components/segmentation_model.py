@@ -5,9 +5,10 @@ import numpy as np
 from typing import Any, Tuple, Optional
 from monai.inferers import SlidingWindowInferer
 from HiTMicTools.model_components.base_model import BaseModel
+from HiTMicTools.model_components.image_scaler import ImageScaler
 from HiTMicTools.utils import get_device, empty_gpu_cache
 
-class Segmentator:
+class Segmentator(BaseModel):
     """
     A class for performing image segmentation using a pre-trained model.
 
@@ -41,8 +42,9 @@ class Segmentator:
         model_graph: torch.nn.Module,
         patch_size: int,
         overlap_ratio: float,
-        scale_method="range01",
+        scale_method: str = "range01",
         half_precision: bool = False,
+        scaler_args: dict = {}
     ) -> None:
         """
         Initializes a Segmentator object.
@@ -62,6 +64,7 @@ class Segmentator:
         assert (
             isinstance(overlap_ratio, float) and 0 <= overlap_ratio < 1
         ), "overlap_ratio must be a float between 0 and 1"
+        assert scale_method in ['range01', 'zscore', 'combined', 'fixed_range', 'none'], "Invalid scale method"
 
         self.device = get_device()
         self.model = self.get_model(model_path, model_graph=model_graph, device=self.device)
@@ -74,7 +77,15 @@ class Segmentator:
             self.model.half()
         else:
             self.model.float()
+        if scale_method != 'none':
+            scaler_args['scale_method'] = scale_method
+            scaler_args['device'] = self.device
+            self.scaler = ImageScaler(**scaler_args)
 
+        if self.half_precision:
+            self.model.half()
+        else:
+            self.model.float()
     def predict(
         self,
         image: np.ndarray,
@@ -99,17 +110,9 @@ class Segmentator:
 
         # Prepare image
         image, added_dim_index = self.ensure_4d(image, is_3D)
-
-        if self.scale_method == "range01":
-            image = self.normalize_percentile_batch(image)
-        elif self.scale_method == "eq-centered":
-            image = self.eq_scale(image)
-        elif self.scale_method == "none":
-            pass
-        else:
-            raise ValueError(f"Unsupported scale method: {self.scale_method}")
-
         img_tensor = torch.from_numpy(image).to(self.device)
+        if self.scale_method != 'none':
+            img_tensor = self.scaler.scale_image(img_tensor)
         if self.half_precision:
             img_tensor = img_tensor.half()  # Convert input to half-precision
         else:
@@ -135,149 +138,3 @@ class Segmentator:
         empty_gpu_cache(self.device)
 
         return output_mask
-
-    def get_model(
-        self, path: str, device: torch.device, model_graph: torch.nn.Module = None
-    ) -> torch.nn.Module:
-        """
-        Loads a model from the specified path and returns it.
-
-        Args:
-            path (str): The path to the model file.
-            device (str): The device to load the model onto.
-            model_graph (Optional[torch.nn.Module]): An optional pre-initialized model graph.
-
-        Returns:
-            torch.nn.Module: The loaded model.
-
-        Raises:
-            FileNotFoundError: If the model file is not found at the specified path.
-            RuntimeError: If an error occurs while loading the model.
-            Exception: If an unexpected error occurs.
-        """
-        try:
-            if model_graph is None:
-                model = torch.load(path, map_location=device)
-            else:
-                model = model_graph
-                state_dict = torch.load(path, map_location=device)
-
-                # Check if the loaded state dictionary is compatible with the model architecture
-                if not set(state_dict.keys()).issubset(set(model.state_dict().keys())):
-                    raise ValueError(
-                        "Loaded state dictionary does not match the model architecture."
-                    )
-
-                model.load_state_dict(state_dict)
-
-            model.to(device)
-            torch.compile(model, mode="max-autotune")
-
-            return model
-
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Model file not found at path: {path}")
-
-        except RuntimeError as e:
-            raise RuntimeError(f"Error occurred while loading the model: {str(e)}")
-
-        except Exception as e:
-            raise Exception(f"Unexpected error occurred: {str(e)}")
-
-    @staticmethod
-    def ensure_4d(
-        img: np.ndarray, is_3D: bool
-    ) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:
-        """
-        Ensures that the input image has 4 dimensions (batch, channel, height, width).
-        This is the standard format expected by PyTorch models.
-
-        Args:
-            img (numpy.ndarray): The input image.
-            is_3D (bool): Wether the image is a 3D volume or a 2D image.
-
-        Returns:
-        Tuple[numpy.ndarray, Optional[Tuple[int, int]]]: A tuple containing the image with 4 dimensions and a tuple of the indexes of the added dimensions (or None if no dimensions were added).
-        """
-        added_dim_indexes = None
-        if img.ndim == 2:
-            # Add channel and batch dimensions if the array is 2D
-            img = np.expand_dims(img, axis=(0, 1))
-            added_dim_indexes = (0, 1)
-        elif img.ndim == 3 and is_3D:
-            # Add a channel dimension if the array is multi-stack
-            img = np.expand_dims(img, axis=0)
-            added_dim_indexes = (0,)
-        elif img.ndim == 3 and not is_3D:
-            # Add a batch dimension if the array is multi-channel
-            img = np.expand_dims(img, axis=1)
-            added_dim_indexes = (1,)
-        elif img.ndim == 4:
-            # No modification needed if the array is already 4D
-            pass
-        else:
-            raise ValueError(
-                f"Unsupported array dimensions: {img.ndim}, current shape is {img.shape}"
-            )
-
-        return img, added_dim_indexes
-
-    @staticmethod
-    def sigmoid(x):
-        return 1 / (1 + np.exp(-x))
-
-    @staticmethod
-    def normalize_percentile_batch(
-        images: np.ndarray,
-        pmin: float = 1,
-        pmax: float = 99.8,
-        clip: bool = True,
-        dtype: np.dtype = np.float32,
-    ) -> np.ndarray:
-        """
-        Percentile-based image normalization for a batch of images.
-
-        Args:
-            images (numpy.ndarray): Input array of shape (batch_size, height, width).
-            pmin (float): Lower percentile value (default: 1).
-            pmax (float): Upper percentile value (default: 99.8).
-            clip (bool): Whether to clip the output values to the range [0, 1] (default: False).
-            dtype (numpy.dtype): Output data type (default: np.float32).
-
-        Returns:
-            numpy.ndarray: Normalized array of shape (batch_size, height, width).
-        """
-        images = images.astype(dtype, copy=False)
-        mi = np.percentile(images, pmin, axis=(2, 3), keepdims=True)
-        ma = np.percentile(images, pmax, axis=(2, 3), keepdims=True)
-        eps = np.finfo(dtype).eps  # Get the smallest positive value for the data type
-
-        images = (images - mi) / (ma - mi + eps)
-
-        if clip:
-            images = np.clip(images, 0, 1)
-
-        # Force output type
-        images = images.astype(dtype, copy=False)
-
-        return images
-
-    def eq_scale(self, img):
-        img = self.to8bit(img)
-
-        equalized = np.zeros_like(img).astype(np.float32)
-        for btx in range(img.shape[0]):
-            for ch in range(img.shape[1]):
-                equalized_ch = cv2.equalizeHist(img[btx, ch])
-                equalized_ch = equalized_ch.astype(np.float32)
-                equalized_ch = (equalized_ch - equalized_ch.mean()) / equalized_ch.std()
-                equalized[btx, ch] = equalized_ch
-
-        return equalized
-
-    def to8bit(self, image):
-        normalized_image = (image - np.min(image)) / (np.max(image) - np.min(image))
-        scaled_image = normalized_image * 255
-        uint8_image = scaled_image.astype(np.uint8)
-
-        return uint8_image
