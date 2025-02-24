@@ -88,6 +88,7 @@ class Segmentator(BaseModel):
         self,
         image: np.ndarray,
         is_3D: bool = False,
+        batch_size: int = None,
         sigmoid: bool = True,
         **kwargs: Any,
     ) -> np.ndarray:
@@ -99,13 +100,14 @@ class Segmentator(BaseModel):
         Args:
             image (numpy.ndarray): The input image or image stack.
             is_3D (bool): For the analysis of 3D images where the [D, H, W]
+            batch_size (int): The size of the batches for processing. If None, processes full stack at once.
             sigmoid (bool): Apply sigmoid trasnform to the output.
             **kwargs: Additional keyword arguments to pass to the SlidingWindowInferer.
 
         Returns:
             numpy.ndarray: The segmentation mask or stack of segmentation masks.
         """
-
+        # TODO: Implement efficient batch size inference
         # Prepare image
         image, added_dim_index = self.ensure_4d(image, is_3D)
         img_tensor = torch.from_numpy(image).to(self.device)

@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, Any
 from HiTMicTools.utils import empty_gpu_cache, get_device
 import gc
 
@@ -72,7 +72,6 @@ class BaseModel:
 
         except Exception as e:
             raise Exception(f"Unexpected error occurred: {str(e)}")
-        
 
     @staticmethod
     def ensure_4d(img: Union[np.ndarray, torch.Tensor], 
