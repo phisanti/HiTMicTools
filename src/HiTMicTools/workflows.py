@@ -122,15 +122,15 @@ class BasePipeline:
             ValueError: If an invalid model type is provided or required arguments are missing.
         """
         if model_type == 'segmentator':
-            self.image_classifier = Segmentator(model_path, model_graph, **kwargs)
+            self.image_classifier = Segmentator(model_path, model_graph=model_graph, **kwargs)
         if model_type == 'segmentator2':
-            self.image_segmentator = Segmentator(model_path, model_graph, **kwargs)
+            self.image_segmentator = Segmentator(model_path, model_graph=model_graph, **kwargs)
         elif model_type == 'cell-classifier':
-            self.object_classifier=CellClassifier(model_path, model_graph, **kwargs)
+            self.object_classifier=CellClassifier(model_path, model_graph=model_graph, **kwargs)
         elif model_type == 'focus-restorer-fl':
-            self.fl_focus_restorer=FocusRestorer(model_path, model_graph, **kwargs)
+            self.fl_focus_restorer=FocusRestorer(model_path, model_graph=model_graph, **kwargs)
         elif model_type == 'focus-restorer-bf':
-            self.bf_focus_restorer=FocusRestorer(model_path, model_graph, **kwargs)
+            self.bf_focus_restorer=FocusRestorer(model_path, model_graph=model_graph, **kwargs)
         elif model_type == 'pi-classifier':
             with open(model_path, "rb") as file:
                 self.pi_classifier = joblib.load(file)
