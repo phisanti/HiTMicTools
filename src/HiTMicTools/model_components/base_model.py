@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 from HiTMicTools.utils import empty_gpu_cache, get_device
 import gc
 
@@ -15,6 +15,7 @@ class BaseModel:
     Methods:
         get_model(path, model_graph=None, device=None): Loads a model from the specified path.
         ensure_4d(img, is_3D): Ensures that the input image has 4 dimensions.
+        cleanup(): Frees GPU memory and performs garbage collection.
     """
 
     def get_model(
@@ -74,7 +75,9 @@ class BaseModel:
         
 
     @staticmethod
-    def ensure_4d(self, img, is_3D) -> Tuple:
+    def ensure_4d(img: Union[np.ndarray, torch.Tensor], 
+                  is_3D: bool,
+                  dimension: Optional[Tuple[int, ...]] = None) -> Tuple[Union[np.ndarray, torch.Tensor], Optional[Tuple[int, ...]]]:
         """
         Ensures that the input image has 4 dimensions (batch, channel, height, width).
 
@@ -86,17 +89,18 @@ class BaseModel:
             Tuple[np.ndarray or torch.Tensor, Optional[Tuple[int, int]]]: A tuple containing the image with 4 dimensions and a tuple of the indexes of the added dimensions (or None if no dimensions were added).
         """
         if isinstance(img, np.ndarray):
-            return self.ensure_4d_np(img, is_3D)
+            return BaseModel.__ensure_4d_np(img, is_3D, dimension)
         elif isinstance(img, torch.Tensor):
-            return self.ensure_4d_torch(img, is_3D)
+            return BaseModel.__ensure_4d_torch(img, is_3D, dimension)
         else:
             raise TypeError(f"Unsupported data type: {type(img)}")
 
 
     @staticmethod
-    def ensure_4d_np(
-        img: np.ndarray, is_3D: bool
-    ) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:
+    def __ensure_4d_np(img: np.ndarray, 
+                       is_3D: bool,
+                       dimension: Optional[Tuple[int, ...]] = None
+                       ) -> Tuple[np.ndarray, Optional[Tuple[int, ...]]]:
         """
         Ensures that the input image has 4 dimensions (batch, channel, height, width).
         This is the standard format expected by PyTorch models.
@@ -109,6 +113,14 @@ class BaseModel:
         Tuple[numpy.ndarray, Optional[Tuple[int, int]]]: A tuple containing the image with 4 dimensions and a tuple of the indexes of the added dimensions (or None if no dimensions were added).
         """
         added_dim_indexes = None
+        if dimension is not None:
+            img = np.expand_dims(img, axis=dimension)
+            if isinstance(dimension, tuple):
+                added_dim_indexes = dimension
+            else:
+                added_dim_indexes = (dimension,)
+
+            return img, added_dim_indexes
         if img.ndim == 2:
             # Add channel and batch dimensions if the array is 2D
             img = np.expand_dims(img, axis=(0, 1))
@@ -132,7 +144,10 @@ class BaseModel:
         return img, added_dim_indexes
 
     @staticmethod
-    def ensure_4d_torch(self, img: torch.Tensor, is_3D: bool) -> Tuple[torch.Tensor, Optional[Tuple[int, int]]]:
+    def __ensure_4d_torch(img: torch.Tensor, 
+                          is_3D: bool,
+                          dimension: Optional[Tuple[int, ...]] = None
+                          ) -> Tuple[torch.Tensor, Optional[Tuple[int, ...]]]:
         """
         Ensures that the input image has 4 dimensions (batch, channel, height, width).
         This is the standard format expected by PyTorch models.
@@ -145,6 +160,11 @@ class BaseModel:
             Tuple[torch.Tensor, Optional[Tuple[int, int]]]: A tuple containing the image tensor with 4 dimensions and a tuple of the indexes of the added dimensions (or None if no dimensions were added).
         """
         added_dim_indexes = None
+        if dimension is not None:
+            for dim in sorted(dimension):
+                img = img.unsqueeze(dim)
+                added_dim_indexes = dimension
+            return img, added_dim_indexes
         if img.ndim == 2:
             # Add channel and batch dimensions if the tensor is 2D
             img = img.unsqueeze(0).unsqueeze(0)
@@ -155,8 +175,8 @@ class BaseModel:
             added_dim_indexes = (0,)
         elif img.ndim == 3 and not is_3D:
             # Add a batch dimension if the tensor is multi-channel
-            img = img.unsqueeze(0)
-            added_dim_indexes = (0,)
+            img = img.unsqueeze(1)
+            added_dim_indexes = (1,)
         elif img.ndim == 4:
             # No modification needed if the tensor is already 4D
             pass
@@ -167,6 +187,32 @@ class BaseModel:
         
         return img, added_dim_indexes
 
+    @staticmethod
+    def restore_dims(img: Union[np.ndarray, torch.Tensor], 
+                    added_dim_indexes: Optional[Tuple[int, ...]]) -> Union[np.ndarray, torch.Tensor]:
+        """
+        Restores the original dimensions of the input image by removing the added dimensions.
+
+        Args:
+            img (np.ndarray or torch.Tensor): The input image.
+            added_dim_indexes (Optional[Tuple[int, ...]]): The indexes of the added dimensions.
+
+        Returns:
+            Union[np.ndarray, torch.Tensor]: The image with the original dimensions restored.
+        """
+        if added_dim_indexes is None:
+            return img
+
+        if isinstance(img, np.ndarray):
+            for dim in sorted(added_dim_indexes, reverse=True):
+                img = np.squeeze(img, axis=dim)
+        elif isinstance(img, torch.Tensor):
+            for dim in sorted(added_dim_indexes, reverse=True):
+                img = img.squeeze(dim)
+        else:
+            raise TypeError(f"Unsupported data type: {type(img)}")
+
+        return img
 
     def cleanup(self):
         gc.collect()
