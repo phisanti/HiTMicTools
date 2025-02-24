@@ -71,7 +71,7 @@ class FocusRestorer(BaseModel):
         else:
             self.model.float()
 
-    def predict(self, image: np.ndarray, is_3D: bool=False, return_tensor: bool=False, rescale: bool=True, **kwargs: Any) -> np.ndarray:
+    def predict(self, image: np.ndarray, is_3D: bool=False, batch_size: int =None, return_tensor: bool=False, rescale: bool=True, **kwargs: Any) -> np.ndarray:
         """
         Predicts the segmentation mask for the given image. It can handle 2D images or a stack of 2D images.
         This method connects the model with the monai SlidingWindowInferer to perform inference on patches of the input image.
@@ -80,6 +80,7 @@ class FocusRestorer(BaseModel):
         Args:
             image (numpy.ndarray): The input image or image stack.
             is_3D (bool): For the analysis of 3D images where the [D, H, W]
+            batch_size (int): The size of the batches for processing. If None, processes full stack at once.
             return_tensor (bool): Return the output as a tensor.
             rescale (bool): Rescale the output to the original range.
             **kwargs: Additional keyword arguments to pass to the SlidingWindowInferer.
@@ -113,8 +114,9 @@ class FocusRestorer(BaseModel):
             # Iterate over the img_tensor on the batch dimension and collect the output in a prefilled output tensor with same shape
             # Howeever, it is important to bear in mind that when subsetting the tensor, it has to retain the shape/dimension
             output = torch.zeros_like(img_tensor)
-            for i in range(img_tensor.shape[0]):
-                output[i:i+1] = inferer(img_tensor[i:i+1], self.model)
+            for i in range(0, img_tensor.shape[0], batch_size):
+                batch_end = min(i + batch_size, img_tensor.shape[0])
+                output[i:batch_end] = inferer(img_tensor[i:batch_end], self.model)
             if rescale and self.scale_method is not None:
                 output = self.scaler.rescale_image(output, self.scale_method)
 
