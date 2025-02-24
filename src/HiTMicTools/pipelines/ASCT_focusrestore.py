@@ -1,6 +1,7 @@
 import os
 import gc
 import tifffile
+from typing import Optional
 import torch
 import pandas as pd
 import numpy as np
@@ -52,9 +53,6 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 1. Read Image:
         is_cuda = get_device() == torch.device("cuda")
-        if is_cuda:
-            import GPUtil
-            gpu=GPUtil.getGPUs()[0]
         movie_name = remove_file_extension(name)
         name = movie_name
         img_logger = self.setup_logger(self.output_path, movie_name)
@@ -77,123 +75,66 @@ class ASCT_focusRestoration(BasePipeline):
         img=img.reshape(nFrames, nChannels, size_x, size_y)
         nFrames = img.shape[0]
 
-        # 2 Pre-process image
+        # 2 Pre-process image --------------------------------------------
         ip = ImagePreprocessor(img, stack_order="TCXY")
         img=np.zeros((1, 1, 1, 1)) # Remove img to save memory
 
         # 2.1 Remove background
-        img_logger.info(f"2.1 - Preprocessing image, Memory:{get_memory_usage()}")
+        img_logger.info(f"2.1 - Preprocessing image", show_memory=True)
         img_logger.info(f"Image shape {ip.img.shape}")
-        mean_intensity_0 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
-        img_logger.info(
-            f"Intensity before clear background:\n{np.round(mean_intensity_0, 3)}"
-        )
+        img_logger.info(f"Intensity before clear background:\n{self.check_px_values(ip, reference_channel, round=3)}")
 
-        if method == "standard":
-            ip.clear_image_background(
-                range(nFrames),
-                0,
-                0,
-                sigma_r=10,
-                method="divide",
-                unit="um",
-                pixel_size=pixel_size,
-            )
-        elif method == "local_background_fl":
-            ip.clear_image_background(
-                range(nFrames),
-                0,
-                nchannels=0,
-                sigma_r=50,
-                method="divide",
-                unit="um",
-                pixel_size=pixel_size,
-            )
-            ip.clear_image_background(
-                range(nFrames),
-                0,
-                nchannels=1,
-                sigma_r=50,
-                method="subtract",
-                unit="um",
-                pixel_size=pixel_size,
-            )
-        elif method == "basicpy_fl":
-            ip.clear_image_background(
-                range(nFrames),
-                0,
-                nchannels=0,
-                sigma_r=20,
-                method="divide",
-                unit="um",
-                pixel_size=pixel_size,
-            )
-            ip.clear_image_background(
-                range(nFrames),
-                0,
-                1,
-                method="basicpy",
-                get_darkfield=False,
-                smoothness_flatfield=5,
-                sort_intensity=False,
-                fitting_mode="approximate",
-            )
-        else:
-            raise ValueError(f"Invalid method: {method}")
+        self.clear_background(ip, channel=reference_channel, nFrames=range(nFrames), method=method, pixel_size=pixel_size)
+        self.clear_background(ip, channel=pi_channel, nFrames=range(nFrames), method=method)
 
         # 2.2 Focus restoration in the reference channel
-        img_logger.info(f"2.2 - Preprocessing image, Memory:{get_memory_usage()}")
-        mean_intensity_1 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
-        img_logger.info(
-            f"Intensity before focus restoration:\n{np.round(mean_intensity_1, 3)}"
-        )
-        ip.img[:, 0, reference_channel]=self.bf_focus_restorer.predict(ip.img[:, 0, reference_channel])
-        mean_intensity_2 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
-        img_logger.info(
-            f"Intensity after focus restoration:\n{np.round(mean_intensity_2, 3)}"
-        )
+        img_logger.info(f"2.2 - Focus restoration in the reference channel", show_memory=True)
+        img_logger.info(f"Intensity (BF) before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}")
 
-        img_logger.info(f"2.2 - Preprocessing image, Memory:{get_memory_usage()}")
-        mean_intensity_2 = np.mean(ip.img[:, 0, pi_channel], axis=(1, 2))
-        img_logger.info(
-            f"Intensity before focus restoration:\n{np.round(mean_intensity_2, 3)}"
-        )
-        ip.img[:, 0, pi_channel]=self.fl_focus_restorer.predict(ip.img[:, 0, pi_channel])
-        mean_intensity_2 = np.mean(ip.img[:, 0, pi_channel], axis=(1, 2))
-        img_logger.info(
-            f"Intensity after focus restoration:\n{np.round(mean_intensity_2, 3)}"
-        )
+        ip.img[:, 0, reference_channel]=self.bf_focus_restorer.predict(ip.img[:, 0, reference_channel], 
+                                                                       batch_size=1, 
+                                                                        buffer_steps=4,  # Process in chunks
+                                                                        buffer_dim=-1,
+                                                                        sw_batch_size=1,
+                                                                       )
+        img_logger.info(f"2.2 - Focus restoration in the PI channel", show_memory=True)
+        img_logger.info(f"Intensity (PI) before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}")
+        ip.img[:, 0, pi_channel]=self.fl_focus_restorer.predict(ip.img[:, 0, pi_channel],
+                                                                batch_size=1,
+                                                                buffer_steps=4,  # Process in chunks
+                                                                buffer_dim=-1,
+                                                                sw_batch_size=1,
+                                                                padding_mode="reflect",
+                                                                )        
+        img_logger.info(f"Intensity (BF) after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}")
+        img_logger.info(f"Intensity (PI) after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}")
+
         # 2.3 Scale reference channel so that it works with previous classifer (relies on z-scaled images)
-        mean_intensity_3 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
-        img_logger.info(
-            f"Intensity before channel intensity scaling:\n{np.round(mean_intensity_3, 3)}"
-        )
         ip.scale_channel(range(nFrames), 0, nchannels=0)
-        mean_intensity_2 = np.mean(ip.img[:, 0, reference_channel], axis=(1, 2))
         img_logger.info(
-            f"Intensity after channel intensity scaling:\n{np.round(mean_intensity_2, 3)}"
+            f"Intensity (BF) after channel intensity scaling:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
 
         # 2.3 Align frames if required
         if align_frames:
-            img_logger.info(f"2.3 - Aligning frames in the stack, Memory:{get_memory_usage()}")
+            img_logger.info(f"2.3 - Aligning frames in the stack", show_memory=True)
             ip.align_image(0, 0, compres_align=.5, crop_image=False, reference="previous")
-            img_logger.info(f"2.3 - Alignment completed! Memory:{get_memory_usage()}")
+            img_logger.info(f"2.3 - Alignment completed!", show_memory=True)
         
         # 2.4 Remove orignal image (not used after background corr) to save mem 
         img_logger.info("Extracting background fluorescence intensity")
         bck_fl = measure_background_intensity(ip.img_original, channel=1)
         ip.img_original=np.zeros((1, 1, 1, 1, 1))
 
-        # 3.1 Segment
-        if is_cuda:
-            img_logger.info(f"3.1 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
+        # 3.1 Segment Image --------------------------------------------
+        img_logger.info(f"3.1 Image Segmentation", show_memory=True, cuda=is_cuda)
         prob_map = self.image_segmentator.predict(
-            ip.img[:, 0, reference_channel, :, :]
+            ip.img[:, 0, reference_channel, :, :], 
+            buffer_steps=4,  # Process in chunks
+            buffer_dim=-1,
+            sw_batch_size=1,
         )
-        img_logger.info(f"3.1 - Segmentation completed! Memory:{get_memory_usage()}")
-        if is_cuda:
-            img_logger.info(f"3.1 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
+        img_logger.info(f"3.1 - Segmentation completed!", show_memory=True, cuda=is_cuda)
 
         # Get ROIs
         if prob_map.ndim > 3 and prob_map.shape[1] > 1:
@@ -206,7 +147,7 @@ class ASCT_focusRestoration(BasePipeline):
             pass
 
         # 3.2 Get ROIs
-        img_logger.info(f"3.2 - Extracting ROIs, Memory:{get_memory_usage()}")
+        img_logger.info(f"3.2 - Extracting ROIs", show_memory=True)
         img_analyser = RoiAnalyser(ip.img, prob_map, stack_order=("TSCXY", "TCXY"))
         
         # Remove image-processor to release space
@@ -217,16 +158,13 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(f"{img_analyser.total_rois} objects found")
 
         # 3.3 Classify ROIs
-        img_logger.info(f"3.2 - Classify ROIs, Memory:{get_memory_usage()}")
-        if is_cuda:
-            img_logger.info(f"3.2 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
+        img_logger.info(f"3.2 - Classify ROIs", show_memory=True, cuda=is_cuda)
         #object_classes, labels=self.object_classifier.classify_rois(img_analyser.labeled_mask[:, 0,0], img_analyser.img[:, 0,0])
         object_classes, labels=self.batch_classify_rois(img_analyser, batch_size=5)
-        if is_cuda:
-            img_logger.info(f"3.2 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
+        img_logger.info(f"3.2 GPU  Memory", show_memory=True, cuda=is_cuda)
                 
-        # 4.1 Calc. measurements
-        img_logger.info(f"4 - Starting measurements, Memory:{get_memory_usage()}")
+        # 4.1 Calc. measurements --------------------------------------------
+        img_logger.info(f"4 - Starting measurements", show_memory=True)
         fl_prop = [
             "label",
             "centroid",
@@ -249,12 +187,12 @@ class ASCT_focusRestoration(BasePipeline):
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
-        img_logger.info(f"4 - Measurements completed, Memory:{get_memory_usage()}")
+        img_logger.info(f"4 - Measurements completed", show_memory=True)
 
 
         # 4.1 PI classification
         if self.pi_classifier is not None:
-            img_logger.info(f"4.2 - Running PI classification, Memory:{get_memory_usage()}")
+            img_logger.info(f"4.2 - Running PI classification", show_memory=True)
             predictions = self.pi_classifier.predict(
                 fl_measurements[self.pi_classifier.feature_names_in_]
             )
@@ -280,7 +218,7 @@ class ASCT_focusRestoration(BasePipeline):
         else:
             d_summary = pd.DataFrame()
 
-        # 5. Export data
+        # 5. Export data --------------------------------------------
         export_path = os.path.join(self.output_path, name)
         img_logger.info(f"5 - Writing data to {export_path}")
 
@@ -306,11 +244,11 @@ class ASCT_focusRestoration(BasePipeline):
             image_8bit = convert_image(img_analyser.img, np.uint8)
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
 
-        img_logger.info(f"Analysis completed for {movie_name}, Memory:{get_memory_usage()}")
+        img_logger.info(f"Analysis completed for {movie_name}", show_memory=True)
         del prob_map, img, fl_measurements, d_summary, img_analyser
         gc.collect()
         empty_gpu_cache(get_device())
-        img_logger.info(f"Garbage collection completed, Memory:{get_memory_usage()}")
+        img_logger.info(f"Garbage collection completed", show_memory=True)
         
         self.remove_logger(img_logger)
         
@@ -338,3 +276,52 @@ class ASCT_focusRestoration(BasePipeline):
             all_labels.extend(batch_labels)
         
         return all_object_classes, all_labels
+
+    def clear_background(
+        self,
+        ip: ImagePreprocessor, 
+        channel: int,
+        nFrames: range,
+        method: str,
+        pixel_size: Optional[float] = None
+    ) -> None:
+        """Remove background from images using specified method.
+        
+        Args:
+        ip: Image preprocessor object
+        channel: Channel to process
+        nFrames: Range of frames to process
+        method: Background removal method ('standard', 'basicpy', or 'basicpy_fl')
+        pixel_size: Physical pixel size in microns
+        """
+        # If using the basicpy_fl in config, reference channel is still transform with DoG
+        if method == 'basicpy_fl' and channel == self.reference_channel:
+            method = 'standard'
+        elif method == 'basicpy_fl' and channel == self.pi_channel:
+            method = 'basicpy'
+
+        methods = {
+            "standard": [
+                {"nframes": nFrames, "nchannels": channel, "nslices": 0, "sigma_r": 20, "method": "divide"}
+            ],
+            "basicpy": [
+                {"nframes": nFrames, "nchannels": channel, "nslices": 0, "method": "basicpy",
+                "smoothness_flatfield": 5, "get_darkfield": False,
+                "sort_intensity": False, "fitting_mode": "approximate"}
+            ]
+        }
+        
+        if method not in methods:
+            raise ValueError(f"Invalid method: {method}")
+            
+        for params in methods[method]:
+            if method == "basicpy":
+                ip.clear_image_background(**params)
+            else:
+                ip.clear_image_background(**params, unit="um", pixel_size=pixel_size)
+
+    @staticmethod
+    def check_px_values(ip, channel: int, round: int = None) -> np.ndarray:
+        """Calculate mean pixel intensity across frames for a given channel."""
+        means = np.mean(ip.img[:, 0, channel], axis=(1, 2))
+        return np.round(means, round) if round is not None else means
