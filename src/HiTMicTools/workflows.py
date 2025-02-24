@@ -7,6 +7,7 @@ import logging
 from logging.handlers import MemoryHandler
 import concurrent.futures
 from typing import List, Dict, Optional, Union
+from HiTMicTools.memlogger import MemoryLogger
 from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
@@ -69,6 +70,7 @@ class BasePipeline:
         """Set up a logger for logging the analysis progress."""
 
         # Set up logger file
+        logging.setLoggerClass(MemoryLogger)
         last_folder = os.path.basename(os.path.normpath(name))
         log_file = os.path.join(output_path, f"{name}_{logger_id}_analysis.log")
         logger_name = f"{output_path}_{name}_{logger_id}"  # Use a unique identifier for each instance important for parallelisation
