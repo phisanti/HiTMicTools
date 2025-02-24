@@ -24,7 +24,7 @@ class FocusRestorer(BaseModel):
         overlap_ratio: float,
         scale_method='range01',
         half_precision: bool = False,
-    scaler_args: dict = {}
+        scaler_args: dict = {}
 
     ) -> None:
         """
@@ -54,10 +54,8 @@ class FocusRestorer(BaseModel):
             if 'pmin' in scaler_args and 'pmax' in scaler_args:
                 assert 0 <= scaler_args['pmin'] < scaler_args['pmax'] <= 100, "pmin/pmax must be 0 <= pmin < pmax <= 100"
 
-
-
         self.device = get_device()
-        self.model = self.get_model(model_path, self.device, model_graph=model_graph)
+        self.model = self.get_model(model_path, model_graph=model_graph, device=self.device)
         self.patch_size = patch_size
         self.overlap_ratio = overlap_ratio
         self.model.eval()
@@ -66,6 +64,7 @@ class FocusRestorer(BaseModel):
             scaler_args['scale_method'] = scale_method
             scaler_args['device'] = self.device
             self.scaler = ImageScaler(**scaler_args)
+            self.scale_method = scale_method
 
         if self.half_precision:
             self.model.half()
@@ -94,7 +93,7 @@ class FocusRestorer(BaseModel):
             img_tensor = torch.from_numpy(image).to(self.device)
 
         # Prepare image
-        image, added_dim_index  = self.ensure_4d(image, is_3D)
+        img_tensor, added_dim_index  = self.ensure_4d(img_tensor, is_3D)
 
         # add scaling methods here
         if self.scale_method is not None:
@@ -111,14 +110,18 @@ class FocusRestorer(BaseModel):
         )
 
         with torch.no_grad():
-            output = inferer(img_tensor, self.model)
+            # Iterate over the img_tensor on the batch dimension and collect the output in a prefilled output tensor with same shape
+            # Howeever, it is important to bear in mind that when subsetting the tensor, it has to retain the shape/dimension
+            output = torch.zeros_like(img_tensor)
+            for i in range(img_tensor.shape[0]):
+                output[i:i+1] = inferer(img_tensor[i:i+1], self.model)
             if rescale and self.scale_method is not None:
                 output = self.scaler.rescale_image(output, self.scale_method)
 
         # Handle output format
         del img_tensor
         if added_dim_index is not None:
-            output = output.squeeze(added_dim_index)
+            output = self.restore_dims(output, added_dim_index)
 
         if return_tensor:
             return output
