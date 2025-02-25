@@ -6,12 +6,14 @@ import joblib
 import logging
 from logging.handlers import MemoryHandler
 import concurrent.futures
+import multiprocessing
 from typing import List, Dict, Optional, Any
 from HiTMicTools.memlogger import MemoryLogger
 from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
-from HiTMicTools.utils import get_system_info, read_metadata
+from HiTMicTools.utils import get_system_info, read_metadata, get_device
+
 import gc
 from contextlib import contextmanager
 
@@ -441,9 +443,14 @@ class BasePipeline:
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {num_workers}")
         start_time = time.time()  # Start timing the entire loop
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_workers
-        ) as executor:
+        self.main_logger.info(f'Total files to process: {len(file_list)}')
+        start_time = time.time()  # Start timing the entire loop
+        if get_device().type == 'cuda':
+            mp_context = multiprocessing.get_context('spawn')
+        else:
+            mp_context = multiprocessing.get_context('fork')
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, 
+                                                    mp_context=mp_context) as executor:
             futures = {}
             for index, name in enumerate(file_list, start=1):
                 file_i = os.path.join(self.input_path, name)

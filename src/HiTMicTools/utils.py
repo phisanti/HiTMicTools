@@ -396,7 +396,7 @@ def get_system_info() -> str:
     info += f"Memory: {memory.percent}% used ({memory.used / (1024**3):.2f}GB / {memory.total / (1024**3):.2f}GB)\n"
     info += f"Disk: {disk.percent}% used ({disk.used / (1024**3):.2f}GB / {disk.total / (1024**3):.2f}GB)\n"
 
-    if get_device() == "cuda":
+    if get_device().type == "cuda":
         import GPUtil
 
         gpus = GPUtil.getGPUs()
