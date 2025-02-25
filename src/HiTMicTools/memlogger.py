@@ -1,8 +1,6 @@
 import logging
-import GPUtil
 from HiTMicTools.utils import (
     get_memory_usage,
-    get_device,
 )
 
 class MemoryLogger(logging.Logger):
@@ -11,6 +9,8 @@ class MemoryLogger(logging.Logger):
     Extends the standard logging.Logger to provide memory tracking capabilities.
     Can report both system RAM usage and GPU memory when available.
     """
+    _gputil_imported = False
+    _gputil_available = False
     def info(
         self, 
         msg: str, 
@@ -32,6 +32,17 @@ class MemoryLogger(logging.Logger):
         if show_memory:
             message += f" | Memory: {get_memory_usage()}"
         if cuda:
-            gpu = GPUtil.getGPUs()[0]
-            message += f" | GPU: {gpu.memoryUsed}MB/{gpu.memoryTotal}MB"
+            if not self._gputil_imported:
+                try:
+                    import GPUtil
+                    self.__class__._gputil_available = True
+                except ImportError:
+                    self.__class__._gputil_available = False
+                self.__class__._gputil_imported = True
+
+            if self._gputil_available:
+                gpu = GPUtil.getGPUs()[0]
+                message += f" | GPU: {gpu.memoryUsed}MB/{gpu.memoryTotal}MB"
+            else:
+                message += " | GPU: GPUtil not installed"
         super().info(message, *args, **kwargs)
