@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import ome_types
 import psutil
-import GPUtil
 import torch
 
 
@@ -371,7 +370,6 @@ def get_system_info() -> str:
     cpu_percent = psutil.cpu_percent()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
-    gpus = GPUtil.getGPUs()
     cpu_model = platform.processor()
 
     info = f"System Information:\n"
@@ -381,7 +379,9 @@ def get_system_info() -> str:
     info += f"Memory: {memory.percent}% used ({memory.used / (1024**3):.2f}GB / {memory.total / (1024**3):.2f}GB)\n"
     info += f"Disk: {disk.percent}% used ({disk.used / (1024**3):.2f}GB / {disk.total / (1024**3):.2f}GB)\n"
     
-    if gpus:
+    if get_device() == "cuda":
+        import GPUtil
+        gpus = GPUtil.getGPUs()
         for i, gpu in enumerate(gpus):
             info += f"GPU {i}: {gpu.name}\n"
             info += f"  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB\n"
