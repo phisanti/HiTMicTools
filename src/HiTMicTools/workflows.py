@@ -6,14 +6,19 @@ import joblib
 import logging
 from logging.handlers import MemoryHandler
 import concurrent.futures
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Any
 from HiTMicTools.memlogger import MemoryLogger
 from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
-from HiTMicTools.utils import get_system_info
+from HiTMicTools.utils import get_system_info, read_metadata
 import gc
 from contextlib import contextmanager
+
+
+from HiTMicTools.model_arch.nafnet import NAFNet
+from HiTMicTools.model_arch.flexresnet import FlexResNet
+from monai.networks.nets import UNet as monai_unet
 
 
 @contextmanager
@@ -42,7 +47,7 @@ class BasePipeline:
         self,
         input_path: str,
         output_path: str,
-        worklist_id : str  = "",
+        worklist_id: str = "",
         file_type: str = ".nd2",
     ):
         """Initialize the BasePipeline.
@@ -55,7 +60,7 @@ class BasePipeline:
         """
         last_folder = os.path.basename(os.path.normpath(input_path))
         self.main_logger = self.setup_logger(
-            output_path, last_folder, logger_id = worklist_id, print_output=True
+            output_path, last_folder, logger_id=worklist_id, print_output=True
         )
         self.input_path = input_path
         if not os.path.exists(output_path):
@@ -65,7 +70,11 @@ class BasePipeline:
         self.file_type = file_type
 
     def setup_logger(
-        self, output_path: str, name: str, logger_id : str = "", print_output: bool = False
+        self,
+        output_path: str,
+        name: str,
+        logger_id: str = "",
+        print_output: bool = False,
     ) -> logging.Logger:
         """Set up a logger for logging the analysis progress."""
 
@@ -103,11 +112,77 @@ class BasePipeline:
         # Delete the logger instance
         del logging.Logger.manager.loggerDict[logger.name]
 
-    def load_model(self, 
-                  model_type: str, 
-                  model_path: str, 
-                  model_graph: Optional[str] = None, 
-                  **kwargs):
+    def load_model_fromdict(self, model_type: str, config_dic: Dict[str, Any]) -> None:
+        """
+        Load a model based on the specified model type and configuration dictionary.
+
+        Args:
+            model_type (str): Type of the model to load ('segmentator', 'segmentator2',
+                            'cell-classifier', 'focus-restorer-fl', 'focus-restorer-bf', 'pi-classifier').
+            config_dic (Dict[str, Any]): Dictionary containing model configuration including:
+                            - 'model_path': Path to model weights file
+                            - 'model_metadata': Path to model metadata (except for pi-classifier)
+                            - 'inferer_args' or 'model_args': Additional configuration parameters
+
+        Returns:
+            None: The model is loaded and attached to the appropriate attribute in the class.
+
+        Raises:
+            ValueError: If an invalid model type is provided or required arguments are missing.
+            KeyError: If required configuration keys are missing.
+        """
+        if "model_path" not in config_dic:
+            raise KeyError(
+                f"Required key 'model_path' missing from configuration for {model_type}"
+            )
+
+        model_path = config_dic["model_path"]
+        if model_type != "pi-classifier":
+            if "model_metadata" not in config_dic:
+                raise KeyError(
+                    f"Required key 'model_metadata' missing from configuration for {model_type}"
+                )
+            model_configs = read_metadata(config_dic["model_metadata"])
+
+        if model_type == "segmentator":
+            model_graph = monai_unet(**model_configs["model_args"])
+            self.image_classifier = Segmentator(
+                model_path, model_graph=model_graph, **config_dic["inferer_args"]
+            )
+        if model_type == "segmentator2":
+            model_graph = monai_unet(**model_configs["model_args"])
+            self.image_segmentator = Segmentator(
+                model_path, model_graph=model_graph, **config_dic["inferer_args"]
+            )
+        elif model_type == "cell-classifier":
+            model_graph = FlexResNet(**model_configs["model_args"])
+            self.object_classifier = CellClassifier(
+                model_path, model_graph=model_graph, **config_dic["model_args"]
+            )
+        elif model_type == "focus-restorer-fl":
+            model_graph = NAFNet(**model_configs["model_args"])
+            self.fl_focus_restorer = FocusRestorer(
+                model_path, model_graph=model_graph, **config_dic["inferer_args"]
+            )
+        elif model_type == "focus-restorer-bf":
+            model_graph = NAFNet(**model_configs["model_args"])
+            self.bf_focus_restorer = FocusRestorer(
+                model_path, model_graph=model_graph, **config_dic["inferer_args"]
+            )
+        elif model_type == "pi-classifier":
+            with open(model_path, "rb") as file:
+                self.pi_classifier = joblib.load(file)
+
+        else:
+            raise ValueError(f"Invalid model type: {model_type}")
+
+    def load_model(
+        self,
+        model_type: str,
+        model_path: str,
+        model_graph: Optional[str] = None,
+        **kwargs,
+    ):
         """
         Load a model based on the specified model type.
 
@@ -123,20 +198,30 @@ class BasePipeline:
         Raises:
             ValueError: If an invalid model type is provided or required arguments are missing.
         """
-        if model_type == 'segmentator':
-            self.image_classifier = Segmentator(model_path, model_graph=model_graph, **kwargs)
-        if model_type == 'segmentator2':
-            self.image_segmentator = Segmentator(model_path, model_graph=model_graph, **kwargs)
-        elif model_type == 'cell-classifier':
-            self.object_classifier=CellClassifier(model_path, model_graph=model_graph, **kwargs)
-        elif model_type == 'focus-restorer-fl':
-            self.fl_focus_restorer=FocusRestorer(model_path, model_graph=model_graph, **kwargs)
-        elif model_type == 'focus-restorer-bf':
-            self.bf_focus_restorer=FocusRestorer(model_path, model_graph=model_graph, **kwargs)
-        elif model_type == 'pi-classifier':
+        if model_type == "segmentator":
+            self.image_classifier = Segmentator(
+                model_path, model_graph=model_graph, **kwargs
+            )
+        if model_type == "segmentator2":
+            self.image_segmentator = Segmentator(
+                model_path, model_graph=model_graph, **kwargs
+            )
+        elif model_type == "cell-classifier":
+            self.object_classifier = CellClassifier(
+                model_path, model_graph=model_graph, **kwargs
+            )
+        elif model_type == "focus-restorer-fl":
+            self.fl_focus_restorer = FocusRestorer(
+                model_path, model_graph=model_graph, **kwargs
+            )
+        elif model_type == "focus-restorer-bf":
+            self.bf_focus_restorer = FocusRestorer(
+                model_path, model_graph=model_graph, **kwargs
+            )
+        elif model_type == "pi-classifier":
             with open(model_path, "rb") as file:
                 self.pi_classifier = joblib.load(file)
-        
+
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 
@@ -160,32 +245,34 @@ class BasePipeline:
 
     def load_config_dict(self, config_dict: Dict) -> None:
         """Configure image analysis settings from a dictionary.
-        
+
         Args:
             config_dict: Dictionary containing configuration parameters
-            
+
         Raises:
             ValueError: If required keys are missing or have invalid types
         """
-        required_keys = {
-            'reference_channel': int,
-            'align_frames': bool, 
-            'method': str
-        }
-        
+        required_keys = {"reference_channel": int, "align_frames": bool, "method": str}
+
         # Validate required keys and types
         for key, expected_type in required_keys.items():
             if key not in config_dict:
                 raise ValueError(f"Missing required key: {key}")
             if not isinstance(config_dict[key], expected_type):
                 raise ValueError(f"Invalid type for {key}. Expected {expected_type}")
-                
+
         # Set attributes
         for key, value in config_dict.items():
             setattr(self, key, value)
 
-
-    def get_files(self, input_path: str, output_folder: str, file_list: str = None, pattern: str = None, no_reanalyse: bool = True) -> List[str]:
+    def get_files(
+        self,
+        input_path: str,
+        output_folder: str,
+        file_list: str = None,
+        pattern: str = None,
+        no_reanalyse: bool = True,
+    ) -> List[str]:
         """
         Retrieve a list of files from the specified input path, filtered by pattern and extension.
 
@@ -206,28 +293,36 @@ class BasePipeline:
         """
         if pattern is None:
             pattern = ""
-        combined_pattern=f"{pattern}*{self.file_type}"
+        combined_pattern = f"{pattern}*{self.file_type}"
         if os.path.isdir(input_path) and file_list is None:
             file_list = glob.glob(os.path.join(input_path, combined_pattern))
-        elif isinstance(file_list, str) and file_list.endswith(".txt") and os.path.exists(file_list):
+        elif (
+            isinstance(file_list, str)
+            and file_list.endswith(".txt")
+            and os.path.exists(file_list)
+        ):
             with open(file_list, "r") as file:
                 file_list = [line.rstrip() for line in file]
         elif isinstance(file_list, list):
-            file_list = [file for file in file_list if fnmatch.fnmatch(file, combined_pattern)]
+            file_list = [
+                file for file in file_list if fnmatch.fnmatch(file, combined_pattern)
+            ]
         else:
-            raise ValueError("Invalid input path. It should be a directory, a .txt file, or a list of files.")
-        
+            raise ValueError(
+                "Invalid input path. It should be a directory, a .txt file, or a list of files."
+            )
+
         # Remove files that have already been analysed
         if no_reanalyse:
             for file_i in file_list:
-                full_path=os.path.join(output_folder, os.path.splitext(file_i)[0])
+                full_path = os.path.join(output_folder, os.path.splitext(file_i)[0])
                 if all(
                     os.path.exists(full_path + ext)
                     for ext in ["_summary.csv", "_fl.csv"]
                 ):
                     file_list.remove(file_i)
                     self.main_logger.info(f"File {file_i} already analysed. Skipping.")
-        
+
         file_list = [os.path.basename(file_i) for file_i in file_list]
         return file_list
 
@@ -260,12 +355,18 @@ class BasePipeline:
         self.main_logger.info(f"Processing folder: {self.input_path}")
         self.main_logger.info(get_system_info())
 
-        file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
+        file_list = self.get_files(
+            self.input_path,
+            self.output_path,
+            file_list,
+            files_pattern,
+            no_reanalyse=True,
+        )
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
         )
 
-        start_time = time.time()  
+        start_time = time.time()
         for name in file_list:
             self.main_logger.info(f"Processing file: {name}")
             self.main_logger.info(
@@ -282,12 +383,15 @@ class BasePipeline:
             )
             file_end_time = time.time()
             file_elapsed_time = file_end_time - file_start_time
-            self.main_logger.info(f"Job {name} has finished in time {file_elapsed_time:.2f} seconds")
+            self.main_logger.info(
+                f"Job {name} has finished in time {file_elapsed_time:.2f} seconds"
+            )
 
-        end_time = time.time() 
+        end_time = time.time()
         total_elapsed_time = end_time - start_time
-        self.main_logger.info(f"Total processing time for all files: {total_elapsed_time:.2f} seconds")
-
+        self.main_logger.info(
+            f"Total processing time for all files: {total_elapsed_time:.2f} seconds"
+        )
 
     def process_folder_parallel(
         self,
@@ -296,7 +400,7 @@ class BasePipeline:
         export_labeled_mask: bool = True,
         export_aligned_image: bool = True,
         num_workers: Optional[int] = None,
-        **kwargs, 
+        **kwargs,
     ) -> None:
         """
         Process multiple image files in parallel using multiprocessing.
@@ -318,7 +422,13 @@ class BasePipeline:
             - This method uses multiprocessing to analyze multiple images in parallel.
         """
 
-        file_list=self.get_files(self.input_path, self.output_path, file_list, files_pattern, no_reanalyse=True)
+        file_list = self.get_files(
+            self.input_path,
+            self.output_path,
+            file_list,
+            files_pattern,
+            no_reanalyse=True,
+        )
         self.main_logger.info(f"Processing folder: {self.input_path}")
         self.main_logger.info(get_system_info())
         self.main_logger.info(
@@ -331,13 +441,24 @@ class BasePipeline:
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {num_workers}")
         start_time = time.time()  # Start timing the entire loop
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_workers
+        ) as executor:
             futures = {}
             for index, name in enumerate(file_list, start=1):
                 file_i = os.path.join(self.input_path, name)
-                self.main_logger.info(f"Submitting file number {index} of {len(file_list)}")
+                self.main_logger.info(
+                    f"Submitting file number {index} of {len(file_list)}"
+                )
                 file_start_time = time.time()
-                future = executor.submit(self.analyse_image, file_i, name, export_labeled_mask, export_aligned_image, **kwargs)
+                future = executor.submit(
+                    self.analyse_image,
+                    file_i,
+                    name,
+                    export_labeled_mask,
+                    export_aligned_image,
+                    **kwargs,
+                )
                 futures[future] = (index, name, file_start_time)
 
             for future in concurrent.futures.as_completed(futures):
@@ -347,13 +468,19 @@ class BasePipeline:
                     index, name, file_start_time = futures[future]
                     file_end_time = time.time()
                     file_elapsed_time = file_end_time - file_start_time
-                    self.main_logger.info(f"Job {name} has finished in time {file_elapsed_time:.2f} seconds")
+                    self.main_logger.info(
+                        f"Job {name} has finished in time {file_elapsed_time:.2f} seconds"
+                    )
                     gc.collect()  # Force garbage collection after each file
                 except Exception as e:
                     index, name, start_time = futures[future]
-                    self.main_logger.error(f"Error processing file {index} ({name}): {e}")
+                    self.main_logger.error(
+                        f"Error processing file {index} ({name}): {e}"
+                    )
 
         end_time = time.time()  # End timing the entire loop
         total_elapsed_time = end_time - start_time
-        self.main_logger.info(f"Total processing time for all files: {total_elapsed_time:.2f} seconds")
+        self.main_logger.info(
+            f"Total processing time for all files: {total_elapsed_time:.2f} seconds"
+        )
         gc.collect()  # Final garbage collection after all files are processed

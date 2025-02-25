@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 # Third-party library imports
 import numpy as np
 import pandas as pd
-from scipy.ndimage import label 
+from scipy.ndimage import label
 from skimage.measure import regionprops_table
 
 # Local imports
@@ -14,6 +14,7 @@ from HiTMicTools.utils import adjust_dimensions, stack_indexer
 # Type hints
 from numpy.typing import NDArray
 from pandas import DataFrame, Series
+
 
 def coords_centroid(coords):
     centroid = np.mean(coords, axis=0)
@@ -67,7 +68,7 @@ class RoiAnalyser:
         cleaned_labeled = label_map[labeled]
         cleaned_mask = cleaned_labeled > 0
         self.binary_mask = cleaned_mask
-        
+
     def get_labels(self, return_value=False):
         """
         Get the labeled mask for the binary mask.

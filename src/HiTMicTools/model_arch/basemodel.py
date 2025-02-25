@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms.functional as TF
 
+
 class DoubleConv(nn.Module):
     """
     Double Convolution Block.
@@ -17,7 +18,8 @@ class DoubleConv(nn.Module):
         conv (nn.Sequential): Sequential container of convolutional layers.
 
     """
-    def __init__(self, in_channels, out_channels, dropout_rate=.0):
+
+    def __init__(self, in_channels, out_channels, dropout_rate=0.0):
         super(DoubleConv, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 3, 1, 1, bias=False),
@@ -32,6 +34,7 @@ class DoubleConv(nn.Module):
 
     def forward(self, x):
         return self.conv(x)
+
 
 class UNET(nn.Module):
     """
@@ -57,17 +60,17 @@ class UNET(nn.Module):
     """
 
     def __init__(
-            self, 
-            in_channels=1, 
-            out_channels=1, 
-            features=[64, 128, 256, 512], 
-            init_features=64, 
-            pooling_steps=4,
-            dropout_rate=.2
+        self,
+        in_channels=1,
+        out_channels=1,
+        features=[64, 128, 256, 512],
+        init_features=64,
+        pooling_steps=4,
+        dropout_rate=0.2,
     ):
         super(UNET, self).__init__()
 
-        if features == None:        
+        if features == None:
             features = [2**i for i in range(pooling_steps) if 2**i >= init_features]
         else:
             features = features
@@ -84,14 +87,16 @@ class UNET(nn.Module):
         for feature in reversed(features):
             self.ups.append(
                 nn.ConvTranspose2d(
-                    feature*2, feature, kernel_size=2, stride=2,
+                    feature * 2,
+                    feature,
+                    kernel_size=2,
+                    stride=2,
                 )
             )
-            self.ups.append(DoubleConv(feature*2, feature))
+            self.ups.append(DoubleConv(feature * 2, feature))
 
-        self.bottleneck = DoubleConv(features[-1], features[-1]*2)
+        self.bottleneck = DoubleConv(features[-1], features[-1] * 2)
         self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
-
 
     def load_weights(self, weights_path):
         """
@@ -101,7 +106,6 @@ class UNET(nn.Module):
             weights_path (str): Path to the weights file.
         """
         self.load_state_dict(torch.load(weights_path))
-
 
     @classmethod
     def from_pretrained(cls, weights_path, **kwargs):
@@ -118,7 +122,6 @@ class UNET(nn.Module):
         model = cls(**kwargs)
         model.load_weights(weights_path)
         return model
-
 
     def forward(self, x):
         """Forward pass of the model.
@@ -139,12 +142,12 @@ class UNET(nn.Module):
 
         for idx in range(0, len(self.ups), 2):
             x = self.ups[idx](x)
-            skip_connection = skip_connections[idx//2]
+            skip_connection = skip_connections[idx // 2]
 
             if x.shape != skip_connection.shape:
                 x = TF.resize(x, size=skip_connection.shape[2:])
 
             concat_skip = torch.cat((skip_connection, x), dim=1)
-            x = self.ups[idx+1](concat_skip)
+            x = self.ups[idx + 1](concat_skip)
 
         return torch.sigmoid(self.final_conv(x))

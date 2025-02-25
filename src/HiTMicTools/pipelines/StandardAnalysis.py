@@ -17,6 +17,7 @@ from HiTMicTools.utils import (
 )
 from jetraw_tools.image_reader import ImageReader
 
+
 # TODO: Remove class since the new toprak_updated_nn has replaced this approach.
 class StandardAnalysis(BasePipeline):
     def analyse_image(
@@ -121,7 +122,9 @@ class StandardAnalysis(BasePipeline):
         # 2.3 Align frames if required
         if align_frames:
             img_logger.info(f"2.3 - Aligning frames in the stack")
-            ip.align_image(0, 0, compres_align=.5, crop_image=False, reference="previous")
+            ip.align_image(
+                0, 0, compres_align=0.5, crop_image=False, reference="previous"
+            )
             img_logger.info(f"2.3 - Alignment completed!")
 
         # 3.1 Segment

@@ -3,24 +3,22 @@ from HiTMicTools.utils import (
     get_memory_usage,
 )
 
+
 class MemoryLogger(logging.Logger):
     """Enhanced logger that includes system memory and GPU usage information.
-    
+
     Extends the standard logging.Logger to provide memory tracking capabilities.
     Can report both system RAM usage and GPU memory when available.
     """
+
     _gputil_imported = False
     _gputil_available = False
+
     def info(
-        self, 
-        msg: str, 
-        show_memory: bool = False, 
-        cuda: bool = False,
-        *args,
-        **kwargs
+        self, msg: str, show_memory: bool = False, cuda: bool = False, *args, **kwargs
     ) -> None:
         """Log info message with optional memory usage details.
-        
+
         Args:
             msg: The message to log
             show_memory: Include system memory usage if True
@@ -35,6 +33,7 @@ class MemoryLogger(logging.Logger):
             if not self._gputil_imported:
                 try:
                     import GPUtil
+
                     self.__class__._gputil_available = True
                 except ImportError:
                     self.__class__._gputil_available = False

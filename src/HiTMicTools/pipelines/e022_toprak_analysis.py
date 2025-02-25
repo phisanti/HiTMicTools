@@ -20,6 +20,7 @@ from HiTMicTools.utils import (
 from jetraw_tools.image_reader import ImageReader
 import psutil
 
+
 # TODO: Remove class since the new toprak_updated_nn has replaced this approach.
 class analysis_e022_sttl(BasePipeline):
     def analyse_image(
@@ -28,11 +29,9 @@ class analysis_e022_sttl(BasePipeline):
         name: str,
         export_labeled_mask: bool = True,
         export_aligned_image: bool = True,
-        subset_img='test',
-
+        subset_img="test",
     ) -> None:
         """Pipeline analysis for each image."""
-
 
         # 1. Read Image:
         movie_name = remove_file_extension(name)
@@ -49,23 +48,23 @@ class analysis_e022_sttl(BasePipeline):
         pixel_size = metadata.images[0].pixels.physical_size_x
         size_x = metadata.images[0].pixels.size_x
         size_y = metadata.images[0].pixels.size_y
-        nSlices=metadata.images[0].pixels.size_z
-        nChannels=metadata.images[0].pixels.size_c
-        nFrames=metadata.images[0].pixels.size_t
+        nSlices = metadata.images[0].pixels.size_z
+        nChannels = metadata.images[0].pixels.size_c
+        nFrames = metadata.images[0].pixels.size_t
 
-        img=img.reshape(nFrames, nChannels, size_x, size_y)
+        img = img.reshape(nFrames, nChannels, size_x, size_y)
 
-        if subset_img == 'half':
-            n = int(nFrames/2)
+        if subset_img == "half":
+            n = int(nFrames / 2)
             img = img[:n]
-        elif subset_img == 'test':
-            n = int(nFrames/20)
+        elif subset_img == "test":
+            n = int(nFrames / 20)
             img = img[:n]
         nFrames = img.shape[0]
 
         # 2 Pre-process image
         ip = ImagePreprocessor(img, stack_order="TCXY")
-        img=np.zeros((1, 1, 1, 1)) # Remove img to save memory
+        img = np.zeros((1, 1, 1, 1))  # Remove img to save memory
 
         # 2.1 Remove background
         img_logger.info(f"2.1 - Preprocessing image, Memory:{get_memory_usage()}")
@@ -141,20 +140,22 @@ class analysis_e022_sttl(BasePipeline):
 
         # 2.3 Align frames if required
         if align_frames:
-            img_logger.info(f"2.3 - Aligning frames in the stack, Memory:{get_memory_usage()}")
-            ip.align_image(0, 0, compres_align=.5, crop_image=False, reference="previous")
+            img_logger.info(
+                f"2.3 - Aligning frames in the stack, Memory:{get_memory_usage()}"
+            )
+            ip.align_image(
+                0, 0, compres_align=0.5, crop_image=False, reference="previous"
+            )
             img_logger.info(f"2.3 - Alignment completed! Memory:{get_memory_usage()}")
-        
-        # 2.4 Remove orignal image (not used after background corr) to save mem 
+
+        # 2.4 Remove orignal image (not used after background corr) to save mem
         img_logger.info("Extracting background fluorescence intensity")
         bck_fl = measure_background_intensity(ip.img_original, channel=1)
-        ip.img_original=np.zeros((1, 1, 1, 1, 1))
+        ip.img_original = np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment
         img_logger.info(f"3.1 - Starting segmentation, Memory:{get_memory_usage()}")
-        prob_map = self.image_segmentator.predict(
-            ip.img[:, 0, reference_channel, :, :]
-        )
+        prob_map = self.image_segmentator.predict(ip.img[:, 0, reference_channel, :, :])
         img_logger.info(f"3.1 - Segmentation completed! Memory:{get_memory_usage()}")
 
         # Get ROIs
@@ -215,7 +216,7 @@ class analysis_e022_sttl(BasePipeline):
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
         img_logger.info("Extracting background fluorescence intensity")
-        #bck_fl = measure_background_intensity(ip.img_original, channel=1)
+        # bck_fl = measure_background_intensity(ip.img_original, channel=1)
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
         morpho_measurements = pd.merge(
             morpho_measurements, time_data, on="frame", how="left"
@@ -226,38 +227,73 @@ class analysis_e022_sttl(BasePipeline):
 
         # 4.1 Object classification
         if self.object_classifier is not None:
-            img_logger.info(f"4.1 - Running object classification, Memory:{get_memory_usage()}")
+            img_logger.info(
+                f"4.1 - Running object classification, Memory:{get_memory_usage()}"
+            )
             predictions = self.object_classifier.predict(
                 morpho_measurements[self.object_classifier.feature_names_in_]
             )
             fl_measurements["object_class"] = predictions
             morpho_measurements["object_class"] = predictions
-            morpho_measurements['file'] = name
+            morpho_measurements["file"] = name
 
         # 4.2 PI classification
         if self.pi_classifier is not None:
-            img_logger.info(f"4.2 - Running PI classification, Memory:{get_memory_usage()}")
+            img_logger.info(
+                f"4.2 - Running PI classification, Memory:{get_memory_usage()}"
+            )
             predictions = self.pi_classifier.predict(
                 fl_measurements[self.pi_classifier.feature_names_in_]
             )
             fl_measurements["pi_class"] = predictions
-            fl_measurements['file'] = name
+            fl_measurements["file"] = name
             try:
-                d_summary = fl_measurements.groupby(['file', 'frame', 'channel', 'date_time', 'timestep', 'object_class']).agg(
-                    total_count=('label', 'count'),
-                    pi_class_neg=('pi_class', lambda x: (x == 'piNEG').sum()),
-                    pi_class_pos=('pi_class', lambda x: (x == 'piPOS').sum()),
-                    area_pineg=('area', lambda x: x[fl_measurements.loc[x.index, 'pi_class'] == 'piNEG'].sum()),
-                    area_pipos=('area', lambda x: x[fl_measurements.loc[x.index, 'pi_class'] == 'piPOS'].sum())
-                ).reset_index()
+                d_summary = (
+                    fl_measurements.groupby(
+                        [
+                            "file",
+                            "frame",
+                            "channel",
+                            "date_time",
+                            "timestep",
+                            "object_class",
+                        ]
+                    )
+                    .agg(
+                        total_count=("label", "count"),
+                        pi_class_neg=("pi_class", lambda x: (x == "piNEG").sum()),
+                        pi_class_pos=("pi_class", lambda x: (x == "piPOS").sum()),
+                        area_pineg=(
+                            "area",
+                            lambda x: x[
+                                fl_measurements.loc[x.index, "pi_class"] == "piNEG"
+                            ].sum(),
+                        ),
+                        area_pipos=(
+                            "area",
+                            lambda x: x[
+                                fl_measurements.loc[x.index, "pi_class"] == "piPOS"
+                            ].sum(),
+                        ),
+                    )
+                    .reset_index()
+                )
 
-                img_logger.info(f"Groupby operation completed successfully. Shape of d_summary: {d_summary.shape}")
+                img_logger.info(
+                    f"Groupby operation completed successfully. Shape of d_summary: {d_summary.shape}"
+                )
             except Exception as e:
                 img_logger.error(f"Error during groupby operation: {str(e)}")
-                img_logger.error(f"Columns in fl_measurements: {fl_measurements.columns}")
-                img_logger.error(f"Unique values in 'pi_class': {fl_measurements['pi_class'].unique()}")
-                d_summary=pd.DataFrame()
-            img_logger.info(f"d_summary created successfully. Memory usage: {get_memory_usage()}")
+                img_logger.error(
+                    f"Columns in fl_measurements: {fl_measurements.columns}"
+                )
+                img_logger.error(
+                    f"Unique values in 'pi_class': {fl_measurements['pi_class'].unique()}"
+                )
+                d_summary = pd.DataFrame()
+            img_logger.info(
+                f"d_summary created successfully. Memory usage: {get_memory_usage()}"
+            )
         else:
             d_summary = pd.DataFrame()
 
@@ -277,5 +313,5 @@ class analysis_e022_sttl(BasePipeline):
 
         img_logger.info(f"Analysis completed for {movie_name}")
         self.remove_logger(img_logger)
-        
+
         return prob_map, ip, metadata

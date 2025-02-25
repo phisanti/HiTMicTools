@@ -17,22 +17,17 @@ import torch
 def remove_file_extension(filename: str) -> str:
     """
     Remove specific file extensions from a filename.
-    
+
     Args:
         filename (str): The input filename.
-    
+
     Returns:
         str: Filename with the extension removed.
     """
-    extensions = [
-        'nd2',
-        'ome\.p\.tiff',
-        'p\.tiff',
-        'ome\.tiff',
-        'tiff'
-    ]
-    pattern = r'\.(?:' + '|'.join(extensions) + ')$'
-    return re.sub(pattern, '', filename)
+    extensions = ["nd2", "ome\.p\.tiff", "p\.tiff", "ome\.tiff", "tiff"]
+    pattern = r"\.(?:" + "|".join(extensions) + ")$"
+    return re.sub(pattern, "", filename)
+
 
 def adjust_dimensions(img: np.ndarray, dim_order: str) -> np.ndarray:
     """
@@ -157,43 +152,54 @@ def get_bit_depth(img: np.ndarray) -> int:
     return bit_depth
 
 
-def convert_image(img: np.ndarray, dtype: np.dtype, scale_mode: str = 'channel') -> np.ndarray:
+def convert_image(
+    img: np.ndarray, dtype: np.dtype, scale_mode: str = "channel"
+) -> np.ndarray:
     """
     Convert an image to the specified data type with optional re-scaling.
-    
+
     Args:
         img (np.ndarray): Input image array.
         dtype (np.dtype): Target data type for conversion.
         scale_mode (str, optional): Method for scaling the image. Defaults to 'channel'.
-    
+
     Returns:
         np.ndarray: Converted image array.
-    
+
     scale_mode options:
     - 'global': Scale entire image
     - 'channel': Scale each channel independently (default)
     - 'frame': Scale each frame independently
     - 'channel_frame': Scale each channel and frame independently
     """
-    
+
     def scale_array(arr):
         return (arr - arr.min()) / (arr.max() - arr.min())
-    
+
     # Scale image to [0, 1] based on scale_mode
     if img.dtype == np.uint8 or img.dtype == np.uint16:
         img = img.astype(np.float32)
     else:
         img_scaled = img
 
-    if scale_mode == 'global':
+    if scale_mode == "global":
         img_scaled = scale_array(img)
-    elif scale_mode == 'channel':
-        img_scaled = np.stack([scale_array(img[:, :, c]) for c in range(img.shape[2])], axis=2)
-    elif scale_mode == 'frame':
-        img_scaled = np.stack([scale_array(img[t]) for t in range(img.shape[0])], axis=0)
-    elif scale_mode == 'channel_frame':
-        img_scaled = np.stack([[scale_array(img[t, :, c]) for c in range(img.shape[2])] 
-                                for t in range(img.shape[0])], axis=(0, 2))
+    elif scale_mode == "channel":
+        img_scaled = np.stack(
+            [scale_array(img[:, :, c]) for c in range(img.shape[2])], axis=2
+        )
+    elif scale_mode == "frame":
+        img_scaled = np.stack(
+            [scale_array(img[t]) for t in range(img.shape[0])], axis=0
+        )
+    elif scale_mode == "channel_frame":
+        img_scaled = np.stack(
+            [
+                [scale_array(img[t, :, c]) for c in range(img.shape[2])]
+                for t in range(img.shape[0])
+            ],
+            axis=(0, 2),
+        )
     else:
         raise ValueError(f"Unsupported scale mode: {scale_mode}")
 
@@ -234,12 +240,21 @@ def get_timestamps(
         timestamp = z[i].delta_t
         if z[i].the_c == ref_channel:
             delta_t_s = timestamp / 1000
-            timepoint = base_time + timedelta(milliseconds=timestamp) - timedelta(milliseconds=base_lag)
+            timepoint = (
+                base_time
+                + timedelta(milliseconds=timestamp)
+                - timedelta(milliseconds=base_lag)
+            )
             formatted_timepoint = timepoint.strftime(timeformat)
             timestep = timestamp
 
             timestamps.append(
-                {"frame": z[i].the_t, "date_time": formatted_timepoint, "timestep": timestep, "abslag_in_s": delta_t_s}
+                {
+                    "frame": z[i].the_t,
+                    "date_time": formatted_timepoint,
+                    "timestep": timestep,
+                    "abslag_in_s": delta_t_s,
+                }
             )
         else:
             continue
@@ -319,7 +334,7 @@ def get_device() -> torch.device:
 def get_memory_usage() -> str:
     """
     Get the current memory usage of the process.
-    
+
     Returns:
         str: Memory usage in MB.
     """
@@ -328,26 +343,28 @@ def get_memory_usage() -> str:
     return f"{memory_info.rss / (1024 * 1024):.2f} MB"
 
 
-def get_device_memory_usage(free: bool = False, unit: str = 'MB') -> float:
+def get_device_memory_usage(free: bool = False, unit: str = "MB") -> float:
     """
     Get the current memory usage or free memory for the active PyTorch device (CUDA, MPS, or CPU).
-    
+
     Args:
         free (bool): If True, return free memory. If False, return used memory. Defaults to False.
         unit (str): Unit for memory measurement. Either 'MB' or 'GB'. Defaults to 'MB'.
-    
+
     Returns:
         float: Memory usage or free memory in specified units.
     """
-    if unit not in ['MB', 'GB']:
+    if unit not in ["MB", "GB"]:
         raise ValueError("Unit must be either 'MB' or 'GB'")
-    
-    divisor = 1024 * 1024 if unit == 'MB' else 1024 * 1024 * 1024
+
+    divisor = 1024 * 1024 if unit == "MB" else 1024 * 1024 * 1024
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
         if free:
-            memory_free = torch.cuda.get_device_properties(device).total_memory - torch.cuda.memory_allocated(device)
+            memory_free = torch.cuda.get_device_properties(
+                device
+            ).total_memory - torch.cuda.memory_allocated(device)
             return memory_free / divisor
         else:
             return torch.cuda.memory_allocated(device) / divisor
@@ -363,13 +380,13 @@ def get_device_memory_usage(free: bool = False, unit: str = 'MB') -> float:
 def get_system_info() -> str:
     """
     Get detailed system information including CPU, memory, disk, and GPU usage.
-    
+
     Returns:
         str: Formatted string containing system information.
     """
     cpu_percent = psutil.cpu_percent()
     memory = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
+    disk = psutil.disk_usage("/")
     cpu_model = platform.processor()
 
     info = f"System Information:\n"
@@ -378,9 +395,10 @@ def get_system_info() -> str:
     info += f"CPU Usage: {cpu_percent}%\n"
     info += f"Memory: {memory.percent}% used ({memory.used / (1024**3):.2f}GB / {memory.total / (1024**3):.2f}GB)\n"
     info += f"Disk: {disk.percent}% used ({disk.used / (1024**3):.2f}GB / {disk.total / (1024**3):.2f}GB)\n"
-    
+
     if get_device() == "cuda":
         import GPUtil
+
         gpus = GPUtil.getGPUs()
         for i, gpu in enumerate(gpus):
             info += f"GPU {i}: {gpu.name}\n"
@@ -388,5 +406,5 @@ def get_system_info() -> str:
             info += f"  GPU utilization: {gpu.load*100}%\n"
     else:
         info += "No GPUs detected\n"
-    
+
     return info

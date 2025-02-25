@@ -1,6 +1,7 @@
 import os
 import sys
-sys.path.insert(0, './src')
+
+sys.path.insert(0, "./src")
 
 from monai.networks.nets import UNet as monai_unet
 from HiTMicTools.utils import read_metadata
@@ -10,13 +11,13 @@ from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
 from HiTMicTools.model_arch.nafnet import NAFNet
 from HiTMicTools.model_arch.flexresnet import FlexResNet
 
-def main(config_file: str, worklist: str = None):
 
+def main(config_file: str, worklist: str = None):
     if worklist is None:
         worklist_id = ""
     else:
         worklist_id = os.path.basename(worklist).split(".")[0]
-        print(f'Using worklist: {worklist}')
+        print(f"Using worklist: {worklist}")
 
     # Read and parse a YAML file
     c_reader = ConfReader(config_file)
@@ -46,34 +47,39 @@ def main(config_file: str, worklist: str = None):
     segmentator_args = read_metadata(configs.segmentation["model_metadata"])
     cell_classifier_args = read_metadata(configs.cell_classifier["model_metadata"])
 
-    analysis_wf.load_model('segmentator2', 
-                           configs.segmentation["model_path"],
-                           monai_unet(**segmentator_args['model_args']),
-                           **configs.segmentation["inferer_args"]
-                           )
-    analysis_wf.load_model('cell-classifier', 
-                           configs.cell_classifier["model_path"],
-                           FlexResNet(**cell_classifier_args['model_args']),
-                           **configs.cell_classifier["model_args"]
-                           )
+    analysis_wf.load_model(
+        "segmentator2",
+        configs.segmentation["model_path"],
+        monai_unet(**segmentator_args["model_args"]),
+        **configs.segmentation["inferer_args"],
+    )
+    analysis_wf.load_model(
+        "cell-classifier",
+        configs.cell_classifier["model_path"],
+        FlexResNet(**cell_classifier_args["model_args"]),
+        **configs.cell_classifier["model_args"],
+    )
 
-    analysis_wf.load_model('pi-classifier', 
-                           configs.pi_classification["pi_classifier_path"])
+    analysis_wf.load_model(
+        "pi-classifier", configs.pi_classification["pi_classifier_path"]
+    )
 
     if pipeline_name == "ASCT_focusrestore":
         bf_focusrestore = read_metadata(configs.bf_focus["model_metadata"])
         fl_focusrestore = read_metadata(configs.fl_focus["model_metadata"])
-        print('Loading focus restoration models')
-        analysis_wf.load_model('focus-restorer-bf', 
-                            configs.bf_focus["model_path"],
-                            NAFNet(**bf_focusrestore['model_args']),
-                            **configs.bf_focus["inferer_args"]
-                            )
-        analysis_wf.load_model('focus-restorer-fl', 
-                            configs.fl_focus["model_path"],
-                            NAFNet(**fl_focusrestore['model_args']),
-                            **configs.fl_focus["inferer_args"]
-                            )
+        print("Loading focus restoration models")
+        analysis_wf.load_model(
+            "focus-restorer-bf",
+            configs.bf_focus["model_path"],
+            NAFNet(**bf_focusrestore["model_args"]),
+            **configs.bf_focus["inferer_args"],
+        )
+        analysis_wf.load_model(
+            "focus-restorer-fl",
+            configs.fl_focus["model_path"],
+            NAFNet(**fl_focusrestore["model_args"]),
+            **configs.fl_focus["inferer_args"],
+        )
     else:
         print("Skipping focus restoration")
 
@@ -97,9 +103,8 @@ def main(config_file: str, worklist: str = None):
 
 
 if __name__ == "__main__":
-    #import multiprocessing
-    #multiprocessing.set_start_method('fork', force=True)
-
+    # import multiprocessing
+    # multiprocessing.set_start_method('fork', force=True)
 
     if len(sys.argv) < 2:
         print("Usage: python main_final.py <config_file> [<worklist_file>]")
@@ -120,4 +125,4 @@ if __name__ == "__main__":
             sys.exit(1)
 
     main(config_file_path, worklist_id)
-    #main()
+    # main()

@@ -6,11 +6,12 @@ from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.model_components.image_scaler import ImageScaler
 from HiTMicTools.utils import get_device
 
+
 class Segmentator(BaseModel):
     """
     A class for performing image segmentation using a pre-trained model.
 
-    The key points of this class is the pre-processing of the input images if required and the 
+    The key points of this class is the pre-processing of the input images if required and the
     SlidingWindow inference in order to predict in batchest to not saturate the GPU RAM.
 
     Attributes:
@@ -42,7 +43,7 @@ class Segmentator(BaseModel):
         overlap_ratio: float,
         scale_method: str = "range01",
         half_precision: bool = False,
-        scaler_args: dict = {}
+        scaler_args: dict = {},
     ) -> None:
         """
         Initializes a Segmentator object.
@@ -62,10 +63,18 @@ class Segmentator(BaseModel):
         assert (
             isinstance(overlap_ratio, float) and 0 <= overlap_ratio < 1
         ), "overlap_ratio must be a float between 0 and 1"
-        assert scale_method in ['range01', 'zscore', 'combined', 'fixed_range', 'none'], "Invalid scale method"
+        assert scale_method in [
+            "range01",
+            "zscore",
+            "combined",
+            "fixed_range",
+            "none",
+        ], "Invalid scale method"
 
         self.device = get_device()
-        self.model = self.get_model(model_path, model_graph=model_graph, device=self.device)
+        self.model = self.get_model(
+            model_path, model_graph=model_graph, device=self.device
+        )
         self.patch_size = patch_size
         self.overlap_ratio = overlap_ratio
         self.scale_method = scale_method
@@ -75,15 +84,16 @@ class Segmentator(BaseModel):
             self.model.half()
         else:
             self.model.float()
-        if scale_method != 'none':
-            scaler_args['scale_method'] = scale_method
-            scaler_args['device'] = self.device
+        if scale_method != "none":
+            scaler_args["scale_method"] = scale_method
+            scaler_args["device"] = self.device
             self.scaler = ImageScaler(**scaler_args)
 
         if self.half_precision:
             self.model.half()
         else:
             self.model.float()
+
     def predict(
         self,
         image: np.ndarray,
@@ -111,7 +121,7 @@ class Segmentator(BaseModel):
         # Prepare image
         image, added_dim_index = self.ensure_4d(image, is_3D)
         img_tensor = torch.from_numpy(image).to(self.device)
-        if self.scale_method != 'none':
+        if self.scale_method != "none":
             img_tensor = self.scaler.scale_image(img_tensor)
         if self.half_precision:
             img_tensor = img_tensor.half()  # Convert input to half-precision
@@ -122,7 +132,7 @@ class Segmentator(BaseModel):
         inferer = SlidingWindowInferer(
             roi_size=self.patch_size, overlap=self.overlap_ratio, **kwargs
         )
-
+        self.model.to(self.device)
         with torch.no_grad():
             output_mask = inferer(img_tensor, self.model)
             if sigmoid:
@@ -135,5 +145,5 @@ class Segmentator(BaseModel):
         # Free up tensors
         del img_tensor, image
         self.cleanup()
-        
+
         return output_mask

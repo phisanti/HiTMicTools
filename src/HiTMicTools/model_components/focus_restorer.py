@@ -22,10 +22,9 @@ class FocusRestorer(BaseModel):
         model_graph: torch.nn.Module,
         patch_size: int,
         overlap_ratio: float,
-        scale_method='range01',
+        scale_method="range01",
         half_precision: bool = False,
-        scaler_args: dict = {}
-
+        scaler_args: dict = {},
     ) -> None:
         """
         Initializes a Segmentator object.
@@ -46,23 +45,34 @@ class FocusRestorer(BaseModel):
             isinstance(overlap_ratio, float) and 0 <= overlap_ratio < 1
         ), "overlap_ratio must be a float between 0 and 1"
 
-        assert scale_method in ['range01', 'zscore', 'combined', 'fixed_range'], "Invalid scale method"
+        assert scale_method in [
+            "range01",
+            "zscore",
+            "combined",
+            "fixed_range",
+        ], "Invalid scale method"
         # Validate scaler arguments based on method
-        if scale_method == 'fixed_range':
-            assert 'bit_depth' in scaler_args, "bit_depth required for fixed_range scaling"
-        elif scale_method in ['range01', 'combined']:
-            if 'pmin' in scaler_args and 'pmax' in scaler_args:
-                assert 0 <= scaler_args['pmin'] < scaler_args['pmax'] <= 100, "pmin/pmax must be 0 <= pmin < pmax <= 100"
+        if scale_method == "fixed_range":
+            assert (
+                "bit_depth" in scaler_args
+            ), "bit_depth required for fixed_range scaling"
+        elif scale_method in ["range01", "combined"]:
+            if "pmin" in scaler_args and "pmax" in scaler_args:
+                assert (
+                    0 <= scaler_args["pmin"] < scaler_args["pmax"] <= 100
+                ), "pmin/pmax must be 0 <= pmin < pmax <= 100"
 
         self.device = get_device()
-        self.model = self.get_model(model_path, model_graph=model_graph, device=self.device)
+        self.model = self.get_model(
+            model_path, model_graph=model_graph, device=self.device
+        )
         self.patch_size = patch_size
         self.overlap_ratio = overlap_ratio
         self.model.eval()
         self.half_precision = half_precision
         if scale_method is not None:
-            scaler_args['scale_method'] = scale_method
-            scaler_args['device'] = self.device
+            scaler_args["scale_method"] = scale_method
+            scaler_args["device"] = self.device
             self.scaler = ImageScaler(**scaler_args)
             self.scale_method = scale_method
 
@@ -71,7 +81,15 @@ class FocusRestorer(BaseModel):
         else:
             self.model.float()
 
-    def predict(self, image: np.ndarray, is_3D: bool=False, batch_size: int =None, return_tensor: bool=False, rescale: bool=True, **kwargs: Any) -> np.ndarray:
+    def predict(
+        self,
+        image: np.ndarray,
+        is_3D: bool = False,
+        batch_size: int = None,
+        return_tensor: bool = False,
+        rescale: bool = True,
+        **kwargs: Any,
+    ) -> np.ndarray:
         """
         Predicts the segmentation mask for the given image. It can handle 2D images or a stack of 2D images.
         This method connects the model with the monai SlidingWindowInferer to perform inference on patches of the input image.
@@ -94,12 +112,12 @@ class FocusRestorer(BaseModel):
             img_tensor = torch.from_numpy(image).to(self.device)
 
         # Prepare image
-        img_tensor, added_dim_index  = self.ensure_4d(img_tensor, is_3D)
+        img_tensor, added_dim_index = self.ensure_4d(img_tensor, is_3D)
 
         # add scaling methods here
         if self.scale_method is not None:
             img_tensor = self.scaler.scale_image(img_tensor)
-    
+
         if self.half_precision:
             img_tensor = img_tensor.half()  # Convert input to half-precision
         else:
@@ -127,7 +145,7 @@ class FocusRestorer(BaseModel):
 
         if return_tensor:
             return output
-        
+
         output_np = output.cpu().numpy()
         del output
         self.cleanup()

@@ -19,14 +19,17 @@ class FlexResNet(nn.Module):
     Raises:
         ValueError: If invalid arguments are provided.
     """
-    def __init__(self, 
-                num_classes, 
-                in_channels=1, 
-                min_size=32, 
-                initial_filters=64, 
-                num_blocks=2, 
-                use_global_pool=True,
-                **residual_unit_kwargs):
+
+    def __init__(
+        self,
+        num_classes,
+        in_channels=1,
+        min_size=32,
+        initial_filters=64,
+        num_blocks=2,
+        use_global_pool=True,
+        **residual_unit_kwargs,
+    ):
         super().__init__()
         self.min_size = min_size
 
@@ -43,7 +46,7 @@ class FlexResNet(nn.Module):
                     strides=2 if i == 0 else 1,
                     kernel_size=3,
                     subunits=2 if i == 0 else 3,
-                    **residual_unit_kwargs
+                    **residual_unit_kwargs,
                 )
             )
             current_channels = out_channels
@@ -55,9 +58,7 @@ class FlexResNet(nn.Module):
 
         self.features = nn.Sequential(*layers)
 
-        self.classifier = nn.Sequential(
-            nn.LazyLinear(num_classes)
-        )
+        self.classifier = nn.Sequential(nn.LazyLinear(num_classes))
 
     def forward(self, x):
         # Pad if necessary
@@ -74,8 +75,8 @@ class FlexResNet(nn.Module):
 
 
 if __name__ == "__main__":
-
     from torchsummary import summary
+
     model = FlexResNet(num_classes=2)
     dummy_input = torch.zeros(1, 1, 32, 32)
     model(dummy_input)

@@ -17,6 +17,7 @@ from HiTMicTools.utils import adjust_dimensions, stack_indexer
 from numpy.typing import NDArray
 from pandas import DataFrame, Series
 
+
 def roi_skewness(regionmask, intensity):
     """Cupy version for the ROI standard deviation as defined in analysis_tools.utils"""
     roi_intensities = intensity[regionmask]
@@ -31,10 +32,12 @@ def roi_skewness(regionmask, intensity):
     except Exception:
         return 0
 
+
 def roi_std_dev(regionmask, intensity):
     """Cupy version for the ROI standard deviation as defined in analysis_tools.utils"""
     roi_intensities = intensity[regionmask]
     return float(cp.std(roi_intensities))
+
 
 def coords_centroid(coords):
     centroid = cp.mean(coords, axis=0)
@@ -43,6 +46,7 @@ def coords_centroid(coords):
 
 def convert_to_list_and_dump(row):
     return json.dumps(row.tolist())
+
 
 def stack_indexer_ingpu(
     nframes: Union[int, List[int], range] = [0],
@@ -88,6 +92,7 @@ def stack_indexer_ingpu(
     index_table = cp.array(combinations)
     return index_table
 
+
 class RoiAnalyser:
     def __init__(self, image, probability_map, stack_order=("TSCXY", "TXY")):
         image = adjust_dimensions(image, stack_order[0])
@@ -96,7 +101,6 @@ class RoiAnalyser:
         self.img = cp.asarray(image)
         self.proba_map = cp.asarray(probability_map)
         self.stack_order = stack_order
-
 
     def create_binary_mask(self, threshold=0.5):
         """
@@ -130,7 +134,7 @@ class RoiAnalyser:
         cleaned_labeled = label_map[labeled]
         cleaned_mask = cleaned_labeled > 0
         self.binary_mask = cleaned_mask
-        
+
     def get_labels(self, return_value=False):
         """
         Get the labeled mask for the binary mask.
