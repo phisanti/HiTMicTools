@@ -166,7 +166,7 @@ class Toprak_updated_nn(BasePipeline):
         # 3.1 Segment
         if is_cuda:
             img_logger.info(f"3.1 GPU  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB")
-        prob_map = self.image_classifier.predict(
+        prob_map = self.image_segmentator.predict(
             ip.img[:, 0, reference_channel, :, :]
         )
         img_logger.info(f"3.1 - Segmentation completed! Memory:{get_memory_usage()}")

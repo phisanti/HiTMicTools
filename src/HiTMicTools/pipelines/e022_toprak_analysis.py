@@ -152,7 +152,7 @@ class analysis_e022_sttl(BasePipeline):
 
         # 3.1 Segment
         img_logger.info(f"3.1 - Starting segmentation, Memory:{get_memory_usage()}")
-        prob_map = self.image_classifier_args.predict(
+        prob_map = self.image_segmentator.predict(
             ip.img[:, 0, reference_channel, :, :]
         )
         img_logger.info(f"3.1 - Segmentation completed! Memory:{get_memory_usage()}")
