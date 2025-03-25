@@ -13,15 +13,22 @@ from HiTMicTools.model_arch.flexresnet import FlexResNet
 
 
 def main(config_file: str, worklist: str = None):
-    if worklist is None:
-        worklist_id = ""
-    else:
+    # Initialize worklist_id and file_list
+    worklist_id = ""
+    if worklist is not None and worklist.strip():
+        if not os.path.isfile(worklist):
+            print(f"Error: Worklist file not found: {worklist}")
+            sys.exit(1)
         worklist_id = os.path.basename(worklist).split(".")[0]
         print(f"Using worklist: {worklist}")
+        # Update the config with the worklist
+        c_reader = ConfReader(config_file)
+        configs = c_reader.opt
+        configs.input_data["file_list"] = worklist
+    else:
+        c_reader = ConfReader(config_file)
+        configs = c_reader.opt
 
-    # Read and parse a YAML file
-    c_reader = ConfReader(config_file)
-    configs = c_reader.opt
     extra_args = configs.get("extra", {})
     num_workers = configs.pipeline_setup.get("num_workers", {})
 

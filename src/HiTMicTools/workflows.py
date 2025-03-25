@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from HiTMicTools.model_arch.nafnet import NAFNet
 from HiTMicTools.model_arch.flexresnet import FlexResNet
 from monai.networks.nets import UNet as monai_unet
+from HiTMicTools.model_components.pi_classifier import PIClassifier
 
 
 @contextmanager
@@ -172,9 +173,7 @@ class BasePipeline:
                 model_path, model_graph=model_graph, **config_dic["inferer_args"]
             )
         elif model_type == "pi-classifier":
-            with open(model_path, "rb") as file:
-                self.pi_classifier = joblib.load(file)
-
+            self.pi_classifier = PIClassifier(model_path)
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 
@@ -221,9 +220,7 @@ class BasePipeline:
                 model_path, model_graph=model_graph, **kwargs
             )
         elif model_type == "pi-classifier":
-            with open(model_path, "rb") as file:
-                self.pi_classifier = joblib.load(file)
-
+            self.pi_classifier = PIClassifier(model_path)
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 
@@ -287,46 +284,53 @@ class BasePipeline:
 
         Returns:
             List[str]: List of file names to be processed.
-
-        Notes:
-            - If file_list is provided, it takes precedence over input_path.
-            - If no_reanalyse is True, files with existing output will be excluded from the returned list.
-            - The method supports input as a directory, a text file with file paths, or a list of files.
         """
         if pattern is None:
             pattern = ""
         combined_pattern = f"{pattern}*{self.file_type}"
-        if os.path.isdir(input_path) and file_list is None:
-            file_list = glob.glob(os.path.join(input_path, combined_pattern))
-        elif (
-            isinstance(file_list, str)
-            and file_list.endswith(".txt")
-            and os.path.exists(file_list)
-        ):
+        
+        # Initialize empty file list
+        files_to_process = []
+        
+        # Case 1: Using a text file list
+        if file_list is not None and os.path.isfile(file_list) and file_list.endswith(".txt"):
             with open(file_list, "r") as file:
-                file_list = [line.rstrip() for line in file]
-        elif isinstance(file_list, list):
-            file_list = [
-                file for file in file_list if fnmatch.fnmatch(file, combined_pattern)
-            ]
+                files_to_process = [line.strip() for line in file if line.strip()]
+                # Ensure all files exist and match pattern
+                files_to_process = [
+                    f for f in files_to_process 
+                    if os.path.exists(f) and fnmatch.fnmatch(os.path.basename(f), combined_pattern)
+                ]
+                
+        # Case 2: Using input directory
+        elif os.path.isdir(input_path):
+            files_to_process = glob.glob(os.path.join(input_path, combined_pattern))
         else:
             raise ValueError(
-                "Invalid input path. It should be a directory, a .txt file, or a list of files."
+                f"Invalid input: {input_path}. Must be either a directory or a .txt file containing file paths."
             )
 
-        # Remove files that have already been analysed
+        if not files_to_process:
+            self.main_logger.warning(f"No matching files found with pattern: {combined_pattern}")
+            return []
+
+        # Remove already analyzed files if requested
         if no_reanalyse:
-            for file_i in file_list:
-                full_path = os.path.join(output_folder, os.path.splitext(file_i)[0])
-                if all(
-                    os.path.exists(full_path + ext)
+            filtered_files = []
+            for file_path in files_to_process:
+                base_name = os.path.splitext(os.path.basename(file_path))[0]
+                full_output_path = os.path.join(output_folder, base_name)
+                if not all(
+                    os.path.exists(full_output_path + ext)
                     for ext in ["_summary.csv", "_fl.csv"]
                 ):
-                    file_list.remove(file_i)
-                    self.main_logger.info(f"File {file_i} already analysed. Skipping.")
+                    filtered_files.append(file_path)
+                else:
+                    self.main_logger.info(f"File {base_name} already analysed. Skipping.")
+            files_to_process = filtered_files
 
-        file_list = [os.path.basename(file_i) for file_i in file_list]
-        return file_list
+        # Return just the basenames for consistency
+        return [os.path.basename(f) for f in files_to_process]
 
     def process_folder(
         self,
@@ -442,15 +446,22 @@ class BasePipeline:
             num_workers = int(total_cpu_threads // 2)
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {num_workers}")
-        start_time = time.time()  # Start timing the entire loop
         self.main_logger.info(f'Total files to process: {len(file_list)}')
         start_time = time.time()  # Start timing the entire loop
+
         if get_device().type == 'cuda':
             mp_context = multiprocessing.get_context('spawn')
+            self.main_logger.info("Using spawn context with ProcessPoolExecutor for CUDA backend")
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context)
+        elif get_device().type == 'mps':
+            self.main_logger.info("Using ThreadPoolExecutor for MPS backend")
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
         else:
             mp_context = multiprocessing.get_context('fork')
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, 
-                                                    mp_context=mp_context) as executor:
+            self.main_logger.info("Using fork context with ProcessPoolExecutor for CPU backend")
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context)
+
+        with executor:
             futures = {}
             for index, name in enumerate(file_list, start=1):
                 file_i = os.path.join(self.input_path, name)
