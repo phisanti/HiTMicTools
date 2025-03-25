@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hitmictools"
+version = "0.1.1"
+description = "Tools for high-throughput microscopy image analysis"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Santiago Cano-Muñiz", email = "santiago.cano-muniz@unibas.ch"}
+]
+keywords = ["microscopy", "image-analysis", "deep-learning", "cell-segmentation"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy",
+    "torch",
+    "torchvision",
+    "matplotlib",
+    "seaborn",
+    "pandas",
+    "scikit-learn",
+    "scikit-image",
+    "scipy",
+    "tifffile",
+    "monai",
+    "pystackreg",
+    "GPUtil",
+    "psutil",
+    "opencv-python",
+    "ome-types",
+    "pyyaml",
+    "joblib",
+    "jax==0.4.23",
+    "jaxlib==0.4.23",
+    "basicpy @  git+https://github.com/yuliu96/BaSiCPy.git",
+    "jetraw-tools @ git+https://github.com/phisanti/jetraw_tools.git",
+    "onnxruntime",
+    "skl2onnx",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/phisanti/HiTMicTools"
+"Bug Tracker" = "https://github.com/phisanti/HiTMicTools/issues"
+
+[project.scripts]
+hitmictools = "HiTMicTools.cli:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.optional-dependencies]
+cuda = [
+    "cupy-cuda11x; platform_system != 'Darwin'",
+    "cudf; platform_system != 'Darwin'",
+    "cucim; platform_system != 'Darwin'",
+]
