@@ -4,18 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hitmictools"
-version = "0.1.1"
+version = "0.1.2"
 description = "Tools for high-throughput microscopy image analysis"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "MIT"}
+requires-python = ">=3.9"
+license = {text = "EUPL-1.2"}
 authors = [
     {name = "Santiago Cano-Muñiz", email = "santiago.cano-muniz@unibas.ch"}
 ]
 keywords = ["microscopy", "image-analysis", "deep-learning", "cell-segmentation"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: European Union Public Licence 1.2 (EUPL 1.2)",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Image Processing",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -35,6 +35,7 @@ dependencies = [
     "pystackreg",
     "GPUtil",
     "psutil",
+    "nd2",
     "opencv-python",
     "ome-types",
     "pyyaml",
@@ -52,7 +53,7 @@ dependencies = [
 "Bug Tracker" = "https://github.com/phisanti/HiTMicTools/issues"
 
 [project.scripts]
-hitmictools = "HiTMicTools.cli:cli"
+hitmictools = "HiTMicTools.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
