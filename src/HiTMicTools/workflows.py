@@ -2,7 +2,9 @@ import os
 import glob
 import time
 import fnmatch
-import joblib
+import zipfile
+import tempfile
+import yaml
 import logging
 from logging.handlers import MemoryHandler
 import concurrent.futures
@@ -22,7 +24,6 @@ from HiTMicTools.model_arch.nafnet import NAFNet
 from HiTMicTools.model_arch.flexresnet import FlexResNet
 from monai.networks.nets import UNet as monai_unet
 from HiTMicTools.model_components.pi_classifier import PIClassifier
-
 
 @contextmanager
 def managed_resource(*objects):
@@ -176,6 +177,82 @@ class BasePipeline:
             self.pi_classifier = PIClassifier(model_path)
         else:
             raise ValueError(f"Invalid model type: {model_type}")
+
+    def load_model_bundle(self, path_to_bundle: str) -> None:
+        """
+        Load models and configurations from a model bundle.
+        The model bundle must be a zip file with the following structure:
+        model_bundle.zip
+        ├── config.yml          # Main configuration file
+        ├── models/             # Directory containing model weights
+        │   ├── model_x.pth
+        └── metadata/           # Directory containing model metadata
+            ├── model_x.json
+
+        Args:
+            path_to_bundle (str): Path to the model bundle zip file.
+
+        Raises:
+            FileNotFoundError: If the bundle path does not exist or is not a file.
+            ValueError: If the bundle is not a zip file or has an invalid structure.
+        """
+
+        if not os.path.isfile(path_to_bundle):
+            raise FileNotFoundError(f"Model bundle not found at {path_to_bundle}")
+        if not path_to_bundle.endswith(".zip"):
+            raise ValueError("Model bundle must be a .zip file")
+
+        # Define mapping between config keys and internal model types for proper loading
+        model_type_mapping = {
+            'bf_focus': 'focus-restorer-bf',
+            'fl_focus': 'focus-restorer-fl',
+            'segmentation': 'segmentator2',
+            'cell_classifier': 'cell-classifier',
+            'pi_classification': 'pi-classifier'
+        }
+
+        try:
+            with zipfile.ZipFile(path_to_bundle, "r") as bundle_zip:
+                namelist = bundle_zip.namelist()
+                # Verify bundle structure has all required components
+                required_items = ["config.yml", "models/", "metadata/"]
+                for item in required_items:
+                    if not any(name.startswith(item) for name in namelist):
+                        raise ValueError(f"Invalid model bundle structure: Missing {item}")
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    bundle_zip.extractall(temp_dir)
+
+                    # Load the main configuration file
+                    config_path = os.path.join(temp_dir, 'config.yml')
+                    with open(config_path, 'r') as config_file:
+                        config = yaml.safe_load(config_file)
+
+                    # Process each model in the bundle
+                    for model_key, model_config in config.items():
+                        if model_key in model_type_mapping:
+                            model_type = model_type_mapping[model_key]
+                            
+                            # Update paths to point to files in the temporary directory
+                            if model_key == 'pi_classification':
+                                model_config['model_path'] = os.path.join(temp_dir, model_config['model_path'])
+                            else:
+                                model_config['model_path'] = os.path.join(temp_dir, model_config['model_path'])
+                                model_config['model_metadata'] = os.path.join(temp_dir, model_config['model_metadata'])
+
+                            # Load the model
+                            self.load_model_fromdict(model_type, model_config)
+                        else:
+                            self.main_logger.warning(f"Unknown model key in bundle: {model_key}")
+
+        except zipfile.BadZipFile:
+            raise ValueError(f"Invalid or corrupted zip file: {path_to_bundle}")
+        except Exception as e:
+            self.main_logger.error(f"Error loading model bundle: {e}")
+            raise
+
+        self.main_logger.info(f"Successfully validated and loaded model bundle: {path_to_bundle}")
+
 
     def load_model(
         self,
