@@ -40,7 +40,9 @@ class BasePipeline:
     Methods:
         setup_logger: Set up a logger for logging the analysis progress.
         remove_logger: Remove logger, useful for concurrent parallel processing.
-        load_model: Load a model based on the specified model type.
+        load_model_fromdict: Load a model based on the specified model type and configuration dictionary.
+        load_model_bundle: Load models and configurations from a bundled zip file.
+        load_config_dict: Configure image analysis settings from a dictionary.
         config_image_analysis: Configure the image analysis settings.
         get_files: Retrieve a list of files from the specified input path, filtered by pattern and extension.
         process_folder: Process all files with the matching pattern and file extension in the input folder.
@@ -150,11 +152,6 @@ class BasePipeline:
 
         if model_type == "segmentator":
             model_graph = monai_unet(**model_configs["model_args"])
-            self.image_classifier = Segmentator(
-                model_path, model_graph=model_graph, **config_dic["inferer_args"]
-            )
-        if model_type == "segmentator2":
-            model_graph = monai_unet(**model_configs["model_args"])
             self.image_segmentator = Segmentator(
                 model_path, model_graph=model_graph, **config_dic["inferer_args"]
             )
@@ -206,7 +203,7 @@ class BasePipeline:
         model_type_mapping = {
             'bf_focus': 'focus-restorer-bf',
             'fl_focus': 'focus-restorer-fl',
-            'segmentation': 'segmentator2',
+            'segmentation': 'segmentator',
             'cell_classifier': 'cell-classifier',
             'pi_classification': 'pi-classifier'
         }
@@ -253,53 +250,6 @@ class BasePipeline:
 
         self.main_logger.info(f"Successfully validated and loaded model bundle: {path_to_bundle}")
 
-
-    def load_model(
-        self,
-        model_type: str,
-        model_path: str,
-        model_graph: Optional[str] = None,
-        **kwargs,
-    ):
-        """
-        Load a model based on the specified model type.
-
-        Args:
-            model_type (str): Type of the model to load ('segmentator', 'cell-classifier', 'fl-focus-restorer', 'bf-focus-restorer', 'pi-classifier').
-            model_path (str): Path to the model file.
-            model_args (str, optional): Graph with the model architecture. Required for 'segmentator' and 'cell-classifier'.
-            **kwargs: Additional keyword arguments for the model.
-
-        Returns:
-            The loaded model object.
-
-        Raises:
-            ValueError: If an invalid model type is provided or required arguments are missing.
-        """
-        if model_type == "segmentator":
-            self.image_classifier = Segmentator(
-                model_path, model_graph=model_graph, **kwargs
-            )
-        if model_type == "segmentator2":
-            self.image_segmentator = Segmentator(
-                model_path, model_graph=model_graph, **kwargs
-            )
-        elif model_type == "cell-classifier":
-            self.object_classifier = CellClassifier(
-                model_path, model_graph=model_graph, **kwargs
-            )
-        elif model_type == "focus-restorer-fl":
-            self.fl_focus_restorer = FocusRestorer(
-                model_path, model_graph=model_graph, **kwargs
-            )
-        elif model_type == "focus-restorer-bf":
-            self.bf_focus_restorer = FocusRestorer(
-                model_path, model_graph=model_graph, **kwargs
-            )
-        elif model_type == "pi-classifier":
-            self.pi_classifier = PIClassifier(model_path)
-        else:
-            raise ValueError(f"Invalid model type: {model_type}")
 
     def config_image_analysis(
         self,
