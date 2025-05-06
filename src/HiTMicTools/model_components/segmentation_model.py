@@ -130,7 +130,7 @@ class Segmentator(BaseModel):
 
         # Create SlidingWindowInferer
         inferer = SlidingWindowInferer(
-            roi_size=self.patch_size, overlap=self.overlap_ratio, **kwargs
+            roi_size=self.patch_size, overlap=self.overlap_ratio, padding_mode='reflect', **kwargs
         )
         self.model.to(self.device)
         with torch.no_grad():
