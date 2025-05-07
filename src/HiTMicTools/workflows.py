@@ -20,6 +20,7 @@ from typing import List, Dict, Optional, Any
 from abc import ABC, abstractmethod
 
 # Local imports
+from HiTMicTools import __version__
 from HiTMicTools.memlogger import MemoryLogger
 from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
@@ -421,7 +422,11 @@ class BasePipeline(ABC):
             - This method processes files sequentially, unlike process_folder_parallel.
             - The method will analyze each image file using the analyse_image method.
         """
+        self.main_logger.info(f"Running hitmictools version {__version__}")
         self.main_logger.info(f"Processing folder: {self.input_path}")
+        self.main_logger.info(f"Output folder: {self.output_path}")
+        self.main_logger.info(f"Files pattern: {files_pattern}")
+        self.main_logger.info(f"File type: {self.file_type}")
         self.main_logger.info(get_system_info())
 
         file_list = self.get_files(
@@ -506,7 +511,11 @@ class BasePipeline(ABC):
             self.main_logger.warning("No files to process. Exiting.")
             return
 
+        self.main_logger.info(f"Running hitmictools version {__version__}")
         self.main_logger.info(f"Processing folder: {self.input_path}")
+        self.main_logger.info(f"Output folder: {self.output_path}")
+        self.main_logger.info(f"Files pattern: {files_pattern}")
+        self.main_logger.info(f"File type: {self.file_type}")
         self.main_logger.info(get_system_info())
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"

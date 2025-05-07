@@ -1,5 +1,5 @@
-import os
-import sys
-
-# Add the parent directory of the current file to the Python module search path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import pkg_resources
+    __version__ = pkg_resources.get_distribution("HiTMicTools").version
+except pkg_resources.DistributionNotFound:
+    __version__ = "0.0.0+dev"
