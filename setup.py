@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="hitmictools",
-    version="0.3.0",
+    version="0.3.1",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     long_description=open("README.md").read(),
@@ -35,5 +35,5 @@ setup(
         "onnxruntime",
         "skl2onnx",
     ],
-    keywords=["microscopy", "image-analysis", "deep-learning", "cell-segmentation"]
+    keywords=["microscopy", "image-analysis", "deep-learning", "cell-segmentation"],
 )
