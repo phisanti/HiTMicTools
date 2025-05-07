@@ -51,21 +51,26 @@ cucim
 ```
 Moreover, it is also necessary to install the jetraw-tools and basicpy package from the source:
 ```bash
-   pip install "https://github.com/yuliu96/BaSiCPy.git",
-   pip install "https://github.com/phisanti/jetraw_tools.git",
+   pip install git+https://github.com/yuliu96/BaSiCPy.git
+   pip install git+https://github.com/phisanti/jetraw_tools.git
 ```
 
 The `jetraw-tools` package also depends on the jetraw software and having a valid licence. This is only required if working with `.p.tiff` files.
 
 ## 🚀 Installation
-This project can be easily installed via pip from the repository:
+We recommend to create a conda environment with python 3.9 for best compatibility with the dependencies.
 ```bash
-pip install https://github.com/boeck-lab/HiTMicTools.git
+conda create -n hitmictools python=3.9
+conda activate hitmictools
+```
+Then, this project can be easily installed via pip from the repository:
+```bash
+pip install git+https://github.com/phisanti/HiTMicTools
 ```
 
 However, if you would like to contribute or suggest any change, you can also clone the source:
 ```bash
-git clone https://github.com/boeck-lab/HiTMicTools.git
+git clone https://github.com/phisanti/HiTMicTools
 cd HiTMicTools
 pip install -e .
 ```
