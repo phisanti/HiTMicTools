@@ -11,11 +11,11 @@ def main():
     """Main entry point for HiTMicTools CLI"""
     parser = hitmictools()
     args = parser.parse_args()
-    
-    if not hasattr(args, 'func'):
+
+    if not hasattr(args, "func"):
         parser.print_help()
         sys.exit(1)
-    
+
     args.func(args)
 
 

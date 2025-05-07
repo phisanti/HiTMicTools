@@ -12,7 +12,7 @@ from HiTMicTools.model_arch.flexresnet import FlexResNet
 def build_and_run_pipeline(config_file: str, worklist: str = None):
     """
     Build and run the image analysis pipeline based on configuration.
-    
+
     Args:
         config_file (str): Path to the configuration file
         worklist (str, optional): Path to the worklist file. Defaults to None.
@@ -21,7 +21,7 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
     worklist_id = None
     c_reader = ConfReader(config_file)
     configs = c_reader.opt
-    
+
     if worklist is not None and worklist.strip():
         if not os.path.isfile(worklist):
             print(f"Error: Worklist file not found: {worklist}")
@@ -60,7 +60,13 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
         analysis_wf.load_model_bundle(model_bundle)
     else:
         # Load models individually using load_model_fromdict
-        for model_key in ['segmentation', 'cell_classifier', 'bf_focus', 'fl_focus', 'pi_classification']:
+        for model_key in [
+            "segmentation",
+            "cell_classifier",
+            "bf_focus",
+            "fl_focus",
+            "pi_classification",
+        ]:
             if model_key in configs:
                 analysis_wf.load_model_fromdict(model_key, configs[model_key])
 

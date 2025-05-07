@@ -15,9 +15,9 @@ import gc
 import multiprocessing
 from contextlib import contextmanager
 
-# Type annotations and 
+# Type annotations and
 from typing import List, Dict, Optional, Any
-from abc import ABC, abstractmethod 
+from abc import ABC, abstractmethod
 
 # Local imports
 from HiTMicTools.memlogger import MemoryLogger
@@ -30,6 +30,7 @@ from HiTMicTools.model_arch.flexresnet import FlexResNet
 from HiTMicTools.model_components.pi_classifier import PIClassifier
 from monai.networks.nets import UNet as monai_unet
 
+
 @contextmanager
 def managed_resource(*objects):
     yield objects
@@ -41,7 +42,7 @@ def managed_resource(*objects):
 class BasePipeline(ABC):
     """
     An abstract base class for performing standard analysis on microscopy images.
-    
+
     This class provides the framework for image analysis pipelines but requires
     subclasses to implement the analyse_image method for specific analysis tasks.
 
@@ -76,16 +77,15 @@ class BasePipeline(ABC):
         self.input_path = input_path
         self.worklist_path = worklist_path
         last_folder = os.path.basename(os.path.normpath(self.input_path))
-        
+
         worklist_id = ""
         if worklist_path:
             worklist_id = os.path.basename(worklist_path).split(".")[0]
-            
+
         self.main_logger = self.setup_logger(
             output_path, last_folder, logger_id=worklist_id, print_output=True
         )
-        
-        
+
         if not os.path.exists(output_path):
             os.makedirs(output_path)
 
@@ -218,11 +218,11 @@ class BasePipeline(ABC):
 
         # Define mapping between config keys and internal model types for proper loading
         model_type_mapping = {
-            'bf_focus': 'focus-restorer-bf',
-            'fl_focus': 'focus-restorer-fl',
-            'segmentation': 'segmentator',
-            'cell_classifier': 'cell-classifier',
-            'pi_classification': 'pi-classifier'
+            "bf_focus": "focus-restorer-bf",
+            "fl_focus": "focus-restorer-fl",
+            "segmentation": "segmentator",
+            "cell_classifier": "cell-classifier",
+            "pi_classification": "pi-classifier",
         }
 
         try:
@@ -232,32 +232,42 @@ class BasePipeline(ABC):
                 required_items = ["config.yml", "models/", "metadata/"]
                 for item in required_items:
                     if not any(name.startswith(item) for name in namelist):
-                        raise ValueError(f"Invalid model bundle structure: Missing {item}")
+                        raise ValueError(
+                            f"Invalid model bundle structure: Missing {item}"
+                        )
 
                 with tempfile.TemporaryDirectory() as temp_dir:
                     bundle_zip.extractall(temp_dir)
 
                     # Load the main configuration file
-                    config_path = os.path.join(temp_dir, 'config.yml')
-                    with open(config_path, 'r') as config_file:
+                    config_path = os.path.join(temp_dir, "config.yml")
+                    with open(config_path, "r") as config_file:
                         config = yaml.safe_load(config_file)
 
                     # Process each model in the bundle
                     for model_key, model_config in config.items():
                         if model_key in model_type_mapping:
                             model_type = model_type_mapping[model_key]
-                            
+
                             # Update paths to point to files in the temporary directory
-                            if model_key == 'pi_classification':
-                                model_config['model_path'] = os.path.join(temp_dir, model_config['model_path'])
+                            if model_key == "pi_classification":
+                                model_config["model_path"] = os.path.join(
+                                    temp_dir, model_config["model_path"]
+                                )
                             else:
-                                model_config['model_path'] = os.path.join(temp_dir, model_config['model_path'])
-                                model_config['model_metadata'] = os.path.join(temp_dir, model_config['model_metadata'])
+                                model_config["model_path"] = os.path.join(
+                                    temp_dir, model_config["model_path"]
+                                )
+                                model_config["model_metadata"] = os.path.join(
+                                    temp_dir, model_config["model_metadata"]
+                                )
 
                             # Load the model
                             self.load_model_fromdict(model_type, model_config)
                         else:
-                            self.main_logger.warning(f"Unknown model key in bundle: {model_key}")
+                            self.main_logger.warning(
+                                f"Unknown model key in bundle: {model_key}"
+                            )
 
         except zipfile.BadZipFile:
             raise ValueError(f"Invalid or corrupted zip file: {path_to_bundle}")
@@ -265,8 +275,9 @@ class BasePipeline(ABC):
             self.main_logger.error(f"Error loading model bundle: {e}")
             raise
 
-        self.main_logger.info(f"Successfully validated and loaded model bundle: {path_to_bundle}")
-
+        self.main_logger.info(
+            f"Successfully validated and loaded model bundle: {path_to_bundle}"
+        )
 
     def config_image_analysis(
         self,
@@ -331,20 +342,26 @@ class BasePipeline(ABC):
         if pattern is None:
             pattern = ""
         combined_pattern = f"{pattern}*{self.file_type}"
-        
+
         # Initialize empty file list
         files_to_process = []
-        
+
         # Case 1: Using a text file list
-        if worklist_path is not None and os.path.isfile(worklist_path) and worklist_path.endswith(".txt"):
+        if (
+            worklist_path is not None
+            and os.path.isfile(worklist_path)
+            and worklist_path.endswith(".txt")
+        ):
             with open(worklist_path, "r") as file:
                 files_to_process = [line.strip() for line in file if line.strip()]
                 # Ensure all files exist and match pattern
                 files_to_process = [
-                    f for f in files_to_process 
-                    if os.path.exists(f) and fnmatch.fnmatch(os.path.basename(f), combined_pattern)
+                    f
+                    for f in files_to_process
+                    if os.path.exists(f)
+                    and fnmatch.fnmatch(os.path.basename(f), combined_pattern)
                 ]
-                
+
         # Case 2: Using input directory
         elif os.path.isdir(input_path):
             files_to_process = glob.glob(os.path.join(input_path, combined_pattern))
@@ -354,7 +371,9 @@ class BasePipeline(ABC):
             )
 
         if not files_to_process:
-            self.main_logger.warning(f"No matching files found with pattern: {combined_pattern}")
+            self.main_logger.warning(
+                f"No matching files found with pattern: {combined_pattern}"
+            )
             return []
 
         # Remove already analyzed files if requested
@@ -369,7 +388,9 @@ class BasePipeline(ABC):
                 ):
                     filtered_files.append(file_path)
                 else:
-                    self.main_logger.info(f"File {base_name} already analysed. Skipping.")
+                    self.main_logger.info(
+                        f"File {base_name} already analysed. Skipping."
+                    )
             files_to_process = filtered_files
 
         # Return just the basenames for consistency
@@ -409,11 +430,11 @@ class BasePipeline(ABC):
             files_pattern,
             no_reanalyse=True,
         )
-        
+
         if not file_list:
             self.main_logger.warning("No files to process. Exiting.")
             return
-            
+
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
         )
@@ -480,11 +501,11 @@ class BasePipeline(ABC):
             files_pattern,
             no_reanalyse=True,
         )
-        
+
         if not file_list:
             self.main_logger.warning("No files to process. Exiting.")
             return
-        
+
         self.main_logger.info(f"Processing folder: {self.input_path}")
         self.main_logger.info(get_system_info())
         self.main_logger.info(
@@ -496,21 +517,31 @@ class BasePipeline(ABC):
             num_workers = max(1, int(total_cpu_threads // 2))
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {num_workers}")
-        self.main_logger.info(f'Total files to process: {len(file_list)}')
+        self.main_logger.info(f"Total files to process: {len(file_list)}")
         start_time = time.time()  # Start timing the entire loop
 
         try:
-            if get_device().type == 'cuda':
-                mp_context = multiprocessing.get_context('spawn')
-                self.main_logger.info("Using spawn context with ProcessPoolExecutor for CUDA backend")
-                executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context)
-            elif get_device().type == 'mps':
+            if get_device().type == "cuda":
+                mp_context = multiprocessing.get_context("spawn")
+                self.main_logger.info(
+                    "Using spawn context with ProcessPoolExecutor for CUDA backend"
+                )
+                executor = concurrent.futures.ProcessPoolExecutor(
+                    max_workers=num_workers, mp_context=mp_context
+                )
+            elif get_device().type == "mps":
                 self.main_logger.info("Using ThreadPoolExecutor for MPS backend")
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=num_workers
+                )
             else:
-                mp_context = multiprocessing.get_context('fork')
-                self.main_logger.info("Using fork context with ProcessPoolExecutor for CPU backend")
-                executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context)
+                mp_context = multiprocessing.get_context("fork")
+                self.main_logger.info(
+                    "Using fork context with ProcessPoolExecutor for CPU backend"
+                )
+                executor = concurrent.futures.ProcessPoolExecutor(
+                    max_workers=num_workers, mp_context=mp_context
+                )
 
             with executor:
                 futures = {}
@@ -563,23 +594,23 @@ class BasePipeline(ABC):
         file_name: str,
         export_labeled_mask: bool = False,
         export_aligned_image: bool = False,
-        **kwargs
+        **kwargs,
     ) -> None:
         """
         Analyze a single image file.
-        
+
         This is an abstract method that must be implemented by subclasses.
-        
+
         Args:
             file_path (str): Full path to the image file.
             file_name (str): Name of the image file.
             export_labeled_mask (bool): Whether to export labeled mask images.
             export_aligned_image (bool): Whether to export aligned images.
             **kwargs: Additional keyword arguments specific to the analysis method.
-            
+
         Returns:
             None
-            
+
         Raises:
             NotImplementedError: If the subclass does not implement this method.
         """

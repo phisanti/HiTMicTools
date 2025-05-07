@@ -18,38 +18,38 @@ def validate_file(file_path: str, extension: str = None) -> str:
 def add_split_files_command(subparsers):
     """Add the split-files command to the CLI"""
     parser = subparsers.add_parser(
-        "split-files", 
-        help="Split files in a folder into multiple block files for parallel processing"
+        "split-files",
+        help="Split files in a folder into multiple block files for parallel processing",
     )
     parser.add_argument(
-        "--target-folder", 
-        type=str, 
+        "--target-folder",
+        type=str,
         required=True,
-        help="Path to the folder containing files to split"
+        help="Path to the folder containing files to split",
     )
     parser.add_argument(
-        "--n-blocks", 
-        type=int, 
+        "--n-blocks",
+        type=int,
         required=True,
-        help="Number of blocks to split the files into"
+        help="Number of blocks to split the files into",
     )
     parser.add_argument(
-        "--output-dir", 
-        type=str, 
+        "--output-dir",
+        type=str,
         default="./temp",
-        help="Directory to save the block files (default: ./temp)"
+        help="Directory to save the block files (default: ./temp)",
     )
     parser.add_argument(
-        "--file-pattern", 
-        type=str, 
+        "--file-pattern",
+        type=str,
         default=None,
-        help="Pattern to filter files (optional)"
+        help="Pattern to filter files (optional)",
     )
     parser.add_argument(
-        "--file-extension", 
-        type=str, 
+        "--file-extension",
+        type=str,
         default=None,
-        help="File extension to filter by (optional)"
+        help="File extension to filter by (optional)",
     )
     parser.set_defaults(func=run_split_files)
 
@@ -57,32 +57,32 @@ def add_split_files_command(subparsers):
 def run_split_files(args):
     """Run the split-files command"""
     from HiTMicTools.batch_ops import split_files_into_blocks
+
     split_files_into_blocks(
         args.target_folder,
         args.n_blocks,
         args.output_dir,
         args.file_pattern,
-        args.file_extension
+        args.file_extension,
     )
 
 
 def add_run_pipeline_command(subparsers):
     """Add the pipeline command to the CLI"""
-    parser = subparsers.add_parser(
-        "run", 
-        help="Run the image analysis pipeline"
-    )
+    parser = subparsers.add_parser("run", help="Run the image analysis pipeline")
     parser.add_argument(
-        "-c", "--config", 
-        type=lambda x: validate_file(x, ".yml"), 
+        "-c",
+        "--config",
+        type=lambda x: validate_file(x, ".yml"),
         required=True,
-        help="Path to the configuration YAML file"
+        help="Path to the configuration YAML file",
     )
     parser.add_argument(
-        "-w", "--worklist",
+        "-w",
+        "--worklist",
         type=str,
         default=None,
-        help="Path to a worklist file containing file names to process"
+        help="Path to a worklist file containing file names to process",
     )
     parser.set_defaults(func=run_pipeline)
 
@@ -95,91 +95,72 @@ def run_pipeline(args):
 def add_generate_slurm_command(subparsers):
     """Add the generate-slurm command to the CLI"""
     parser = subparsers.add_parser(
-        "generate-slurm", 
-        help="Generate a SLURM job submission template"
+        "generate-slurm", help="Generate a SLURM job submission template"
     )
     parser.add_argument(
-        "--job-name", 
-        type=str, 
-        required=True,
-        help="Name for the SLURM job"
+        "--job-name", type=str, required=True, help="Name for the SLURM job"
     )
     parser.add_argument(
-        "--email", 
-        type=str, 
-        default=None,
-        help="Email for notifications"
+        "--email", type=str, default=None, help="Email for notifications"
     )
     parser.add_argument(
-        "--time", 
-        type=str, 
+        "--time",
+        type=str,
         default="06:00:00",
-        help="Maximum allocated time (default: 06:00:00)"
+        help="Maximum allocated time (default: 06:00:00)",
     )
     parser.add_argument(
-        "--partition", 
-        type=str, 
+        "--partition",
+        type=str,
         default="rtx4090",
-        help="SLURM partition (default: rtx4090)"
+        help="SLURM partition (default: rtx4090)",
     )
     parser.add_argument(
-        "--memory", 
-        type=str, 
-        default="25G",
-        help="Memory per CPU (default: 25G)"
+        "--memory", type=str, default="25G", help="Memory per CPU (default: 25G)"
     )
     parser.add_argument(
-        "--gpu-count", 
-        type=int, 
-        default=1,
-        help="Number of GPUs (default: 1)"
+        "--gpu-count", type=int, default=1, help="Number of GPUs (default: 1)"
     )
     parser.add_argument(
-        "--cpu-count", 
-        type=int, 
-        default=4,
-        help="Number of CPUs per task (default: 4)"
+        "--cpu-count", type=int, default=4, help="Number of CPUs per task (default: 4)"
     )
     parser.add_argument(
-        "--output-dir", 
-        type=str, 
+        "--output-dir",
+        type=str,
         default="./SLURM_jobs_report",
-        help="Directory for SLURM output files (default: ./SLURM_jobs_report)"
+        help="Directory for SLURM output files (default: ./SLURM_jobs_report)",
     )
     parser.add_argument(
-        "--config-file", 
-        type=str, 
-        default=None,
-        help="Path to config file"
+        "--config-file", type=str, default=None, help="Path to config file"
     )
     parser.add_argument(
-        "--file-blocks", 
+        "--file-blocks",
         action="store_true",
-        help="Use file blocks for parallel processing"
+        help="Use file blocks for parallel processing",
     )
     parser.add_argument(
-        "--n-blocks", 
-        type=int, 
+        "--n-blocks",
+        type=int,
         default=10,
-        help="Number of blocks for parallel processing (default: 10)"
+        help="Number of blocks for parallel processing (default: 10)",
     )
     parser.add_argument(
-        "--conda-env", 
-        type=str, 
+        "--conda-env",
+        type=str,
         default="img_analysis",
-        help="Conda environment name (default: img_analysis)"
+        help="Conda environment name (default: img_analysis)",
     )
     parser.add_argument(
-        "--work-dir", 
-        type=str, 
+        "--work-dir",
+        type=str,
         default=os.getcwd(),
-        help="Working directory (default: current working directory)"
+        help="Working directory (default: current working directory)",
     )
     parser.add_argument(
-        "--output-file", 
-        type=str, 
+        "--output-file",
+        type=str,
         default="slurm_job.sh",
-        help="Output file for the SLURM script (default: slurm_job.sh)"
+        help="Output file for the SLURM script (default: slurm_job.sh)",
     )
     parser.set_defaults(func=run_generate_slurm)
 
@@ -187,7 +168,7 @@ def add_generate_slurm_command(subparsers):
 def run_generate_slurm(args):
     """Run the generate-slurm command"""
     from HiTMicTools.batch_ops import generate_slurm_template
-    
+
     template = generate_slurm_template(
         job_name=args.job_name,
         email=args.email,
@@ -203,10 +184,10 @@ def run_generate_slurm(args):
         conda_env=args.conda_env,
         work_dir=args.work_dir,
     )
-    
-    with open(args.output_file, 'w') as f:
+
+    with open(args.output_file, "w") as f:
         f.write(template)
-    
+
     print(f"SLURM job script written to {args.output_file}")
     print(f"Submit with: sbatch {args.output_file}")
 
@@ -217,10 +198,10 @@ def hitmictools():
         description="HiTMicTools - High-Throughput Microscopy Analysis Tools"
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
-    
+
     # Add commands
     add_run_pipeline_command(subparsers)
     add_split_files_command(subparsers)
     add_generate_slurm_command(subparsers)
-    
+
     return parser
