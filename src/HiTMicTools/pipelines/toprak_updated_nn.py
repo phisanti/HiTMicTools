@@ -5,7 +5,7 @@ import torch
 import pandas as pd
 import numpy as np
 from typing import Optional
-from HiTMicTools.processing_tools import ImagePreprocessor
+from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.workflows import BasePipeline
 from HiTMicTools.utils import (
     get_timestamps,

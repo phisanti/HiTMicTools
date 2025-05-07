@@ -2,7 +2,7 @@ import os
 import tifffile
 import pandas as pd
 import numpy as np
-from HiTMicTools.processing_tools import ImagePreprocessor
+from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.roi_analyser import (
     RoiAnalyser,
     roi_skewness,
