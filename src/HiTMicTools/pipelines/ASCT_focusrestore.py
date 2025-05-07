@@ -463,7 +463,7 @@ class ASCT_focusRestoration(BasePipeline):
             - area_total: Total area of all objects
         """
         try:
-            img_logger.info(f"Groupby data: {d_summary.shape}")
+            img_logger.info(f"Group data by {by_list}")
             d_summary = (
                 fl_measurements.groupby(by_list)
                 .agg(
