@@ -26,13 +26,11 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
         if not os.path.isfile(worklist):
             print(f"Error: Worklist file not found: {worklist}")
             sys.exit(1)
-        worklist_id = os.path.basename(worklist).split(".")[0]
         print(f"Using worklist: {worklist}")
-        # Update the config with the worklist
-        configs.input_data["file_list"] = worklist
+        # No need to extract worklist_id or update configs here
     else:
-        # Explicitly set file_list to None when no worklist is provided
-        configs.input_data["file_list"] = None
+        # Set worklist to None explicitly when not provided
+        worklist = None
 
     extra_args = configs.get("extra", {})
     num_workers = configs.pipeline_setup.get("num_workers", {})
@@ -52,53 +50,23 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
         configs.input_data["input_folder"],
         configs.input_data["output_folder"],
         file_type=configs.input_data["file_type"],
-        worklist_id=worklist_id,
+        worklist_path=worklist,
     )
 
     analysis_wf.load_config_dict(configs.pipeline_setup)
-    segmentator_args = read_metadata(configs.segmentation["model_metadata"])
-    cell_classifier_args = read_metadata(configs.cell_classifier["model_metadata"])
-
-    analysis_wf.load_model(
-        "segmentator2",
-        configs.segmentation["model_path"],
-        monai_unet(**segmentator_args["model_args"]),
-        **configs.segmentation["inferer_args"],
-    )
-    analysis_wf.load_model(
-        "cell-classifier",
-        configs.cell_classifier["model_path"],
-        FlexResNet(**cell_classifier_args["model_args"]),
-        **configs.cell_classifier["model_args"],
-    )
-
-    analysis_wf.load_model(
-        "pi-classifier", configs.pi_classification["pi_classifier_path"]
-    )
-
-    if pipeline_name == "ASCT_focusrestore":
-        bf_focusrestore = read_metadata(configs.bf_focus["model_metadata"])
-        fl_focusrestore = read_metadata(configs.fl_focus["model_metadata"])
-        print("Loading focus restoration models")
-        analysis_wf.load_model(
-            "focus-restorer-bf",
-            configs.bf_focus["model_path"],
-            NAFNet(**bf_focusrestore["model_args"]),
-            **configs.bf_focus["inferer_args"],
-        )
-        analysis_wf.load_model(
-            "focus-restorer-fl",
-            configs.fl_focus["model_path"],
-            NAFNet(**fl_focusrestore["model_args"]),
-            **configs.fl_focus["inferer_args"],
-        )
+    model_bundle = configs.get("models", {}).get("model_collection")
+    if model_bundle:
+        # Use the load_model_bundle method if a bundle is provided
+        analysis_wf.load_model_bundle(model_bundle)
     else:
-        print("Skipping focus restoration")
+        # Load models individually using load_model_fromdict
+        for model_key in ['segmentation', 'cell_classifier', 'bf_focus', 'fl_focus', 'pi_classification']:
+            if model_key in configs:
+                analysis_wf.load_model_fromdict(model_key, configs[model_key])
 
     if configs.pipeline_setup["parallel_processing"]:
         analysis_wf.process_folder_parallel(
             files_pattern=configs.input_data["file_pattern"],
-            file_list=configs.input_data["file_list"],
             export_labeled_mask=configs.input_data["export_labelled_masks"],
             export_aligned_image=configs.input_data["export_labelled_masks"],
             num_workers=num_workers,
@@ -107,7 +75,6 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
     else:
         analysis_wf.process_folder(
             files_pattern=configs.input_data["file_pattern"],
-            file_list=configs.input_data["file_list"],
             export_labeled_mask=configs.input_data["export_labelled_masks"],
             export_aligned_image=configs.input_data["export_labelled_masks"],
             **extra_args,
