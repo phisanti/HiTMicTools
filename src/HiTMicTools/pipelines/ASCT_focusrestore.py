@@ -161,12 +161,6 @@ class ASCT_focusRestoration(BasePipeline):
             f"Intensity (PI) after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
 
-        # 2.3 Scale reference channel so that it works with previous classifer (relies on z-scaled images)
-        ip.scale_channel(range(nFrames), 0, nchannels=0)
-        img_logger.info(
-            f"Intensity (BF) after channel intensity scaling:\n{self.check_px_values(ip, reference_channel, round=3)}"
-        )
-
         # 2.3 Align frames if required
         if align_frames:
             img_logger.info(f"2.3 - Aligning frames in the stack", show_memory=True)
