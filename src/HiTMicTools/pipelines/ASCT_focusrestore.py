@@ -314,26 +314,22 @@ class ASCT_focusRestoration(BasePipeline):
                 # Stack the two channels: object class and PI class
                 combined_mask = np.stack([object_class_mask, pi_class_mask], axis=1)
                 labs_8bit = combined_mask.astype(np.uint8)
-
-                # Save the multi-channel labeled mask
-                tifffile.imwrite(
-                    export_path + "_labels.tiff",
-                    labs_8bit,
-                    imagej=True,
-                    metadata={"axes": "TCYX"},
-                )
-                img_logger.info(
-                    f"Exported labeled mask with object and PI classification channels"
-                )
+                axes = "TCYX"
+                log_msg = "Exported labeled mask with object and PI classification channels"
             else:
                 # If no PI classifier, just save the object classification channel
                 labs_8bit = object_class_mask.astype(np.uint8)
-                tifffile.imwrite(
-                    export_path + "_labels.tiff",
-                    labs_8bit,
-                    imagej=True,
-                    metadata={"axes": "TYX"},
-                )
+                axes = "TYX"
+                log_msg = "Exported labeled mask with object classification channel"
+            
+            # Save the labeled mask with appropriate metadata
+            tifffile.imwrite(
+                export_path + "_labels.tiff",
+                labs_8bit,
+                imagej=True,
+                metadata={"axes": axes},
+            )
+            img_logger.info(log_msg)
         if export_aligned_image:
             image_8bit = convert_image(img_analyser.img, np.uint8)
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
