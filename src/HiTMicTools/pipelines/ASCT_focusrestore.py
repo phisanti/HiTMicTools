@@ -1,7 +1,7 @@
 import os
 import gc
 import tifffile
-from typing import Optional, List
+from typing import Optional, List, Union, Dict
 import torch
 import pandas as pd
 import numpy as np
@@ -9,10 +9,13 @@ import numpy as np
 # Local imports
 from HiTMicTools.memlogger import MemoryLogger
 from HiTMicTools.workflows import BasePipeline
-from HiTMicTools.processing_tools import ImagePreprocessor
+from HiTMicTools.img_processing.img_processor import ImagePreprocessor
+from HiTMicTools.img_processing.utils import (
+    measure_background_intensity,
+    map_predictions_to_labels,
+)
 from HiTMicTools.utils import (
     get_timestamps,
-    measure_background_intensity,
     convert_image,
     get_memory_usage,
     remove_file_extension,
@@ -46,16 +49,16 @@ import psutil
 class ASCT_focusRestoration(BasePipeline):
     """
     Pipeline for automated single-cell tracking with focus restoration.
-    
+
     This pipeline processes microscopy images to:
     1. Restore focus in both brightfield and fluorescence channels
     2. Segment and classify cells in the images
     3. Track cells across time frames
     4. Analyze fluorescence intensity and other cellular properties
-    
+
     The pipeline is designed for time-lapse microscopy data with multiple channels,
     particularly for experiments tracking PI (propidium iodide) uptake in cells.
-    
+
     Attributes:
         reference_channel (int): Index of the brightfield/reference channel
         pi_channel (int): Index of the fluorescence/PI channel
@@ -67,6 +70,7 @@ class ASCT_focusRestoration(BasePipeline):
         fl_focus_restorer: Model for restoring focus in fluorescence images
         pi_classifier: Model for classifying PI positive/negative cells
     """
+
     def analyse_image(
         self,
         file_i: str,
@@ -215,7 +219,9 @@ class ASCT_focusRestoration(BasePipeline):
         # 4.1 Calc. measurements --------------------------------------------
         img_logger.info(f"4 - Starting measurements", show_memory=True)
         img_logger.info("4.1 - Extracting background fluorescence intensity")
-        bck_fl=self.measure_background_fl(img_analyser.img, img_analyser.labeled_mask, target_channel=1)
+        bck_fl = measure_background_intensity(
+            img_analyser.img, img_analyser.labeled_mask, target_channel=1
+        )
 
         fl_prop = [
             "label",
@@ -225,7 +231,7 @@ class ASCT_focusRestoration(BasePipeline):
             "mean_intensity",
             "area",
         ]
-        img_logger.info("Extracting fluorescent measurements")
+        img_logger.info("4.2 - Extracting fluorescent measurements")
         fl_measurements = img_analyser.get_roi_measurements(
             target_channel=1,
             properties=fl_prop,
@@ -233,7 +239,7 @@ class ASCT_focusRestoration(BasePipeline):
         )
         fl_measurements["object_class"] = object_classes
 
-        img_logger.info("Extracting time data")
+        img_logger.info("4.3 - Extracting time data")
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
@@ -243,24 +249,27 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 4.1 PI classification
         if self.pi_classifier is not None:
-            img_logger.info(f"4.2 - Running PI classification", show_memory=True)
+            img_logger.info(f"4.4 - Running PI classification", show_memory=True)
             predictions = self.pi_classifier.predict(
                 fl_measurements[self.pi_classifier.feature_names_in_]
             )
             fl_measurements["pi_class"] = predictions
             fl_measurements["file"] = name
-    
+
             # Generate summary data using the dedicated method
-            d_summary = self.generate_data_summary(fl_measurements, [
-                        "file",
-                        "frame",
-                        "channel",
-                        "date_time",
-                        "timestep",
-                        "abslag_in_s",
-                        "object_class",
-                    ], 
-                    img_logger)
+            d_summary = self.generate_data_summary(
+                fl_measurements,
+                [
+                    "file",
+                    "frame",
+                    "channel",
+                    "date_time",
+                    "timestep",
+                    "abslag_in_s",
+                    "object_class",
+                ],
+                img_logger,
+            )
         else:
             d_summary = pd.DataFrame()
 
@@ -272,6 +281,7 @@ class ASCT_focusRestoration(BasePipeline):
         d_summary.to_csv(export_path + "_summary.csv")
 
         if export_labeled_mask:
+            # Create mapping for object classes
             class_to_id = {
                 "single-cell": 0,
                 "clump": 1,
@@ -280,15 +290,50 @@ class ASCT_focusRestoration(BasePipeline):
                 "joint-cell": 4,
             }
 
-            # Create a mapping from original label IDs to new class IDs
-            label_to_class_id = {
-                label: class_to_id[class_name] + 1
-                for label, class_name in zip(labels, object_classes)
-            }
-            vectorized_map = np.vectorize(lambda x: label_to_class_id.get(x, 0))
-            new_labeled_mask = vectorized_map(img_analyser.labeled_mask[:, 0, 0])
-            labs_8bit = new_labeled_mask.astype(np.uint8)
-            tifffile.imwrite(export_path + "_labels.tiff", labs_8bit, imagej=True, metadata={'axes': 'TYX'})
+            # Map object classes to the labeled mask
+            object_class_mask = map_predictions_to_labels(
+                img_analyser.labeled_mask[:, 0, 0],
+                object_classes,
+                labels,
+                value_map={
+                    class_name: class_id + 1
+                    for class_name, class_id in class_to_id.items()
+                },
+            )
+
+            # If PI classifier was used, create a second channel for PI classification
+            if self.pi_classifier is not None:
+                # Map PI classes to the labeled mask
+                pi_class_mask = map_predictions_to_labels(
+                    img_analyser.labeled_mask[:, 0, 0],
+                    fl_measurements["pi_class"].tolist(),
+                    fl_measurements["label"].tolist(),
+                    value_map={"piPOS": 1, "piNEG": 2},
+                )
+
+                # Stack the two channels: object class and PI class
+                combined_mask = np.stack([object_class_mask, pi_class_mask], axis=1)
+                labs_8bit = combined_mask.astype(np.uint8)
+
+                # Save the multi-channel labeled mask
+                tifffile.imwrite(
+                    export_path + "_labels.tiff",
+                    labs_8bit,
+                    imagej=True,
+                    metadata={"axes": "TCYX"},
+                )
+                img_logger.info(
+                    f"Exported labeled mask with object and PI classification channels"
+                )
+            else:
+                # If no PI classifier, just save the object classification channel
+                labs_8bit = object_class_mask.astype(np.uint8)
+                tifffile.imwrite(
+                    export_path + "_labels.tiff",
+                    labs_8bit,
+                    imagej=True,
+                    metadata={"axes": "TYX"},
+                )
         if export_aligned_image:
             image_8bit = convert_image(img_analyser.img, np.uint8)
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
@@ -385,60 +430,29 @@ class ASCT_focusRestoration(BasePipeline):
             else:
                 ip.clear_image_background(**params, unit="um", pixel_size=pixel_size)
 
-
-    def measure_background_fl(self, img, mask, target_channel):
-        """Measure background fluorescence intensity excluding foreground objects.
-
-        Args:
-            img (np.ndarray): Image stack [frame, slice, channel, x, y].
-            mask (np.ndarray): Binary mask with objects as pixels and background as 0 [frame, slice, x, y].
-            target_channel (int): Channel to measure background intensity.
-
-        Returns:
-            pd.DataFrame: DataFrame with background intensity (quantile 10) per frame.
-        """
-        bck_intensities = []
-        frames = []
-        for frame in range(img.shape[0]):
-            # Ensure mask has the same number of dimensions as the image for broadcasting
-            frame_mask = mask[frame, 0]
-            frame_img = img[frame, 0, target_channel]
-
-            # Apply mask to the image: set object pixels to NaN
-            masked_img = np.where(frame_mask == 0, frame_img, np.nan)
-
-            # Calculate the 10th percentile of the background intensity
-            bck_intensity = np.nanquantile(masked_img, 0.10)
-            bck_intensities.append(bck_intensity)
-            frames.append(frame)
-
-        # Create a Pandas DataFrame to store the results
-        bck_fl_df = pd.DataFrame({'frame': frames, 'background': bck_intensities})
-        return bck_fl_df
-
     def generate_data_summary(
         self,
         fl_measurements: pd.DataFrame,
-        by_list : List[str],
+        by_list: List[str],
         img_logger: MemoryLogger,
     ) -> pd.DataFrame:
         """
         Generate a summary DataFrame from fluorescence measurements with PI classification.
-        
-        This method aggregates the fluorescence measurements by file, frame, channel, 
-        timestamp information, and object class to create a summary of PI-positive and 
+
+        This method aggregates the fluorescence measurements by file, frame, channel,
+        timestamp information, and object class to create a summary of PI-positive and
         PI-negative cell counts and areas.
-        
+
         Args:
             fl_measurements: DataFrame containing fluorescence measurements with 'pi_class' column.
                 Must include columns: 'file', 'frame', 'channel', 'date_time', 'timestep',
                 'abslag_in_s', 'object_class', 'label', 'area', and 'pi_class'.
             img_logger: Logger instance for recording progress and errors.
-        
+
         Returns:
             pd.DataFrame: A summary DataFrame with aggregated counts and areas, or an empty
                 DataFrame if an error occurs during the groupby operation.
-                
+
         Notes:
             The summary includes the following aggregated metrics:
             - total_count: Total number of objects per group
@@ -449,13 +463,9 @@ class ASCT_focusRestoration(BasePipeline):
             - area_total: Total area of all objects
         """
         try:
-            img_logger.info(
-                f"Groupby data: {d_summary.shape}"
-            )
+            img_logger.info(f"Groupby data: {d_summary.shape}")
             d_summary = (
-                fl_measurements.groupby(
-                    by_list
-                )
+                fl_measurements.groupby(by_list)
                 .agg(
                     total_count=("label", "count"),
                     pi_class_neg=("pi_class", lambda x: (x == "piNEG").sum()),
@@ -482,20 +492,17 @@ class ASCT_focusRestoration(BasePipeline):
             )
         except Exception as e:
             img_logger.error(f"Error during groupby operation: {str(e)}")
-            img_logger.error(
-                f"Columns in fl_measurements: {fl_measurements.columns}"
-            )
+            img_logger.error(f"Columns in fl_measurements: {fl_measurements.columns}")
             img_logger.error(
                 f"Unique values in 'pi_class': {fl_measurements['pi_class'].unique()}"
             )
             d_summary = pd.DataFrame()
-        
+
         img_logger.info(
             f"d_summary created successfully. Memory usage: {get_memory_usage()}"
         )
-        
-        return d_summary
 
+        return d_summary
 
     @staticmethod
     def check_px_values(ip, channel: int, round: int = None) -> np.ndarray:
