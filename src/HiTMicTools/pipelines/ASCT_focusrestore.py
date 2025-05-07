@@ -136,6 +136,7 @@ class ASCT_focusRestoration(BasePipeline):
 
         ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
             ip.img[:, 0, reference_channel],
+            rescale=False,
             batch_size=1,
             buffer_steps=4,
             buffer_dim=-1,
