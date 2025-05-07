@@ -5,25 +5,30 @@ import fnmatch
 import zipfile
 import tempfile
 import yaml
+
 import logging
 from logging.handlers import MemoryHandler
+
+# Resources imports
 import concurrent.futures
+import gc
 import multiprocessing
+from contextlib import contextmanager
+
+# Type annotations and 
 from typing import List, Dict, Optional, Any
+from abc import ABC, abstractmethod 
+
+# Local imports
 from HiTMicTools.memlogger import MemoryLogger
 from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
 from HiTMicTools.utils import get_system_info, read_metadata, get_device
-
-import gc
-from contextlib import contextmanager
-
-
 from HiTMicTools.model_arch.nafnet import NAFNet
 from HiTMicTools.model_arch.flexresnet import FlexResNet
-from monai.networks.nets import UNet as monai_unet
 from HiTMicTools.model_components.pi_classifier import PIClassifier
+from monai.networks.nets import UNet as monai_unet
 
 @contextmanager
 def managed_resource(*objects):
@@ -33,9 +38,12 @@ def managed_resource(*objects):
     gc.collect()
 
 
-class BasePipeline:
+class BasePipeline(ABC):
     """
-    A class for performing standard analysis on microscopy images.
+    An abstract base class for performing standard analysis on microscopy images.
+    
+    This class provides the framework for image analysis pipelines but requires
+    subclasses to implement the analyse_image method for specific analysis tasks.
 
     Methods:
         setup_logger: Set up a logger for logging the analysis progress.
@@ -47,13 +55,14 @@ class BasePipeline:
         get_files: Retrieve a list of files from the specified input path, filtered by pattern and extension.
         process_folder: Process all files with the matching pattern and file extension in the input folder.
         process_folder_parallel: Process multiple image files in parallel using multiprocessing.
+        analyse_image: (Abstract) Analyze a single image file. Must be implemented by subclasses.
     """
 
     def __init__(
         self,
         input_path: str,
         output_path: str,
-        worklist_id: str = "",
+        worklist_path: str = None,
         file_type: str = ".nd2",
     ):
         """Initialize the BasePipeline.
@@ -61,14 +70,22 @@ class BasePipeline:
         Args:
             input_path (str): Path to the input directory containing the images.
             output_path (str): Path to the output directory for saving the analysis results.
-            worklist_id (str, optional): Identifier for the worklist. Defaults to "".
+            worklist_path (str, optional): Path to the worklist file. Defaults to None.
             file_type (str, optional): File extension of the image files. Defaults to '.nd2'.
         """
-        last_folder = os.path.basename(os.path.normpath(input_path))
+        self.input_path = input_path
+        self.worklist_path = worklist_path
+        last_folder = os.path.basename(os.path.normpath(self.input_path))
+        
+        worklist_id = ""
+        if worklist_path:
+            worklist_id = os.path.basename(worklist_path).split(".")[0]
+            
         self.main_logger = self.setup_logger(
             output_path, last_folder, logger_id=worklist_id, print_output=True
         )
-        self.input_path = input_path
+        
+        
         if not os.path.exists(output_path):
             os.makedirs(output_path)
 
@@ -295,7 +312,6 @@ class BasePipeline:
         self,
         input_path: str,
         output_folder: str,
-        file_list: str = None,
         pattern: str = None,
         no_reanalyse: bool = True,
     ) -> List[str]:
@@ -305,13 +321,13 @@ class BasePipeline:
         Args:
             input_path (str): Path to the directory containing input files.
             output_folder (str): Path to the directory where output files will be saved.
-            file_list (str, optional): Path to a text file containing a list of input files. Defaults to None.
             pattern (str, optional): File name pattern to match. Defaults to None.
             no_reanalyse (bool): If True, skip files that have already been analyzed. Defaults to True.
 
         Returns:
-            List[str]: List of file names to be processed.
+            List[str]: List of file basenames to be processed.
         """
+        worklist_path = self.worklist_path
         if pattern is None:
             pattern = ""
         combined_pattern = f"{pattern}*{self.file_type}"
@@ -320,8 +336,8 @@ class BasePipeline:
         files_to_process = []
         
         # Case 1: Using a text file list
-        if file_list is not None and os.path.isfile(file_list) and file_list.endswith(".txt"):
-            with open(file_list, "r") as file:
+        if worklist_path is not None and os.path.isfile(worklist_path) and worklist_path.endswith(".txt"):
+            with open(worklist_path, "r") as file:
                 files_to_process = [line.strip() for line in file if line.strip()]
                 # Ensure all files exist and match pattern
                 files_to_process = [
@@ -372,7 +388,6 @@ class BasePipeline:
 
         Args:
             files_pattern (str, optional): Glob pattern to match image files. Defaults to None.
-            file_list (str, optional): Path to a text file containing image file paths. Defaults to None.
             export_labeled_mask (bool): Whether to export labeled mask images. Defaults to False.
             export_aligned_image (bool): Whether to export aligned images. Defaults to False.
             **kwargs: Additional keyword arguments to pass to the analyse_image method.
@@ -391,34 +406,39 @@ class BasePipeline:
         file_list = self.get_files(
             self.input_path,
             self.output_path,
-            file_list,
             files_pattern,
             no_reanalyse=True,
         )
+        
+        if not file_list:
+            self.main_logger.warning("No files to process. Exiting.")
+            return
+            
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
         )
 
         start_time = time.time()
-        for name in file_list:
+        for idx, name in enumerate(file_list, 1):
             self.main_logger.info(f"Processing file: {name}")
-            self.main_logger.info(
-                f"File number {file_list.index(name)+1} of {len(file_list)}"
-            )
+            self.main_logger.info(f"File number {idx} of {len(file_list)}")
             file_i = os.path.join(self.input_path, name)
             file_start_time = time.time()
-            self.analyse_image(
-                file_i,
-                name,
-                export_labeled_mask=export_labeled_mask,
-                export_aligned_image=export_aligned_image,
-                **kwargs,
-            )
-            file_end_time = time.time()
-            file_elapsed_time = file_end_time - file_start_time
-            self.main_logger.info(
-                f"Job {name} has finished in time {file_elapsed_time:.2f} seconds"
-            )
+            try:
+                self.analyse_image(
+                    file_i,
+                    name,
+                    export_labeled_mask=export_labeled_mask,
+                    export_aligned_image=export_aligned_image,
+                    **kwargs,
+                )
+                file_end_time = time.time()
+                file_elapsed_time = file_end_time - file_start_time
+                self.main_logger.info(
+                    f"Job {name} has finished in time {file_elapsed_time:.2f} seconds"
+                )
+            except Exception as e:
+                self.main_logger.error(f"Error processing file {name}: {str(e)}")
 
         end_time = time.time()
         total_elapsed_time = end_time - start_time
@@ -440,7 +460,6 @@ class BasePipeline:
 
         Args:
             files_pattern (str, optional): Glob pattern to match image files. Defaults to None.
-            file_list (str, optional): Path to a text file containing image file paths. Defaults to None.
             export_labeled_mask (bool): Whether to export labeled mask images. Defaults to True.
             export_aligned_image (bool): Whether to export aligned images. Defaults to True.
             num_workers (int, optional): Maximum number of worker processes. Defaults to None.
@@ -451,17 +470,21 @@ class BasePipeline:
 
         Notes:
             - Either files_pattern or file_list must be provided.
-            - If num_workers is None, it defaults to the number of CPU cores.
+            - If num_workers is None, it defaults to half the number of CPU cores.
             - This method uses multiprocessing to analyze multiple images in parallel.
+            - The analyse_image method is expected to handle its own return values.
         """
-
         file_list = self.get_files(
             self.input_path,
             self.output_path,
-            file_list,
             files_pattern,
             no_reanalyse=True,
         )
+        
+        if not file_list:
+            self.main_logger.warning("No files to process. Exiting.")
+            return
+        
         self.main_logger.info(f"Processing folder: {self.input_path}")
         self.main_logger.info(get_system_info())
         self.main_logger.info(
@@ -470,62 +493,94 @@ class BasePipeline:
 
         total_cpu_threads = os.cpu_count()
         if num_workers is None or num_workers == 0:
-            num_workers = int(total_cpu_threads // 2)
+            num_workers = max(1, int(total_cpu_threads // 2))
         self.main_logger.info(f"Total CPU threads: {total_cpu_threads}")
         self.main_logger.info(f"Number of threads used: {num_workers}")
         self.main_logger.info(f'Total files to process: {len(file_list)}')
         start_time = time.time()  # Start timing the entire loop
 
-        if get_device().type == 'cuda':
-            mp_context = multiprocessing.get_context('spawn')
-            self.main_logger.info("Using spawn context with ProcessPoolExecutor for CUDA backend")
-            executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context)
-        elif get_device().type == 'mps':
-            self.main_logger.info("Using ThreadPoolExecutor for MPS backend")
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
-        else:
-            mp_context = multiprocessing.get_context('fork')
-            self.main_logger.info("Using fork context with ProcessPoolExecutor for CPU backend")
-            executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context)
+        try:
+            if get_device().type == 'cuda':
+                mp_context = multiprocessing.get_context('spawn')
+                self.main_logger.info("Using spawn context with ProcessPoolExecutor for CUDA backend")
+                executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context)
+            elif get_device().type == 'mps':
+                self.main_logger.info("Using ThreadPoolExecutor for MPS backend")
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+            else:
+                mp_context = multiprocessing.get_context('fork')
+                self.main_logger.info("Using fork context with ProcessPoolExecutor for CPU backend")
+                executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context)
 
-        with executor:
-            futures = {}
-            for index, name in enumerate(file_list, start=1):
-                file_i = os.path.join(self.input_path, name)
-                self.main_logger.info(
-                    f"Submitting file number {index} of {len(file_list)}"
-                )
-                file_start_time = time.time()
-                future = executor.submit(
-                    self.analyse_image,
-                    file_i,
-                    name,
-                    export_labeled_mask,
-                    export_aligned_image,
-                    **kwargs,
-                )
-                futures[future] = (index, name, file_start_time)
-
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    with managed_resource(future):
-                        result = future.result()
-                    index, name, file_start_time = futures[future]
-                    file_end_time = time.time()
-                    file_elapsed_time = file_end_time - file_start_time
+            with executor:
+                futures = {}
+                for index, name in enumerate(file_list, start=1):
+                    file_i = os.path.join(self.input_path, name)
                     self.main_logger.info(
-                        f"Job {name} has finished in time {file_elapsed_time:.2f} seconds"
+                        f"Submitting file number {index} of {len(file_list)}"
                     )
-                    gc.collect()  # Force garbage collection after each file
-                except Exception as e:
-                    index, name, start_time = futures[future]
-                    self.main_logger.error(
-                        f"Error processing file {index} ({name}): {e}"
+                    file_start_time = time.time()
+                    future = executor.submit(
+                        self.analyse_image,
+                        file_i,
+                        name,
+                        export_labeled_mask,
+                        export_aligned_image,
+                        **kwargs,
                     )
+                    futures[future] = (index, name, file_start_time)
 
-        end_time = time.time()  # End timing the entire loop
-        total_elapsed_time = end_time - start_time
-        self.main_logger.info(
-            f"Total processing time for all files: {total_elapsed_time:.2f} seconds"
-        )
-        gc.collect()  # Final garbage collection after all files are processed
+                for future in concurrent.futures.as_completed(futures):
+                    index, name, file_start_time = futures[future]
+                    try:
+                        with managed_resource(future):
+                            future.result()
+                        file_end_time = time.time()
+                        file_elapsed_time = file_end_time - file_start_time
+                        self.main_logger.info(
+                            f"Job {name} has finished in time {file_elapsed_time:.2f} seconds. ({index}/{len(file_list)})"
+                        )
+                    except Exception as e:
+                        self.main_logger.error(
+                            f"Error processing file {index} ({name}): {str(e)}"
+                        )
+                    finally:
+                        gc.collect()
+        except Exception as e:
+            self.main_logger.error(f"Error in parallel processing: {str(e)}")
+        finally:
+            end_time = time.time()
+            total_elapsed_time = end_time - start_time
+            self.main_logger.info(
+                f"Total processing time for all files: {total_elapsed_time:.2f} seconds"
+            )
+            gc.collect()
+
+    @abstractmethod
+    def analyse_image(
+        self,
+        file_path: str,
+        file_name: str,
+        export_labeled_mask: bool = False,
+        export_aligned_image: bool = False,
+        **kwargs
+    ) -> None:
+        """
+        Analyze a single image file.
+        
+        This is an abstract method that must be implemented by subclasses.
+        
+        Args:
+            file_path (str): Full path to the image file.
+            file_name (str): Name of the image file.
+            export_labeled_mask (bool): Whether to export labeled mask images.
+            export_aligned_image (bool): Whether to export aligned images.
+            **kwargs: Additional keyword arguments specific to the analysis method.
+            
+        Returns:
+            None
+            
+        Raises:
+            NotImplementedError: If the subclass does not implement this method.
+        """
+        pass
