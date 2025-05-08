@@ -15,6 +15,7 @@ from monai.networks.blocks import Convolution, ResidualUnit
 # Local imports
 from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.utils import get_device
+from HiTMicTools.img_processing.utils import dynamic_resize_roi
 
 # Type hints
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -134,79 +135,33 @@ class CellClassifier(BaseModel):
 
     def preprocess_rois(self, rois):
         """Pre-process the ROIs images"""
-        # Dict -> Numpy stack -> 4D (B, C, H, W) stack -> Tensor
-        preprocessed_rois, labels = self.dict_to_numpy_stack(rois)
+        # Dict -> Torch stack -> 4D (B, C, H, W)
+        preprocessed_rois, labels = self.dict_to_torch_stack(rois)
         preprocessed_rois, _ = self.ensure_4d(preprocessed_rois, False)
-        preprocessed_rois = torch.tensor(preprocessed_rois).float().to(self.device)
         return preprocessed_rois, labels
 
     def extract_rois(self, labeled_image, source_image, min_size=None):
-        """Crop ROIs from the image and make uniform size for classification"""
-
-        assert (
-            labeled_image.shape == source_image.shape
-        ), "Images must have the same shape"
+        """Crop ROIs from the image and make uniform size for classification using torch-based resizing."""
+        assert labeled_image.shape == source_image.shape, "Images must have the same shape"
         rois = {}
         for label, slices in enumerate(ndimage.find_objects(labeled_image), start=1):
             if slices is not None:
                 cropped_source = source_image[slices]
                 cropped_mask = labeled_image[slices] == label
                 masked_roi = np.where(cropped_mask, cropped_source, 0)
-
+                # Move to device as early as possible
+                roi_tensor = torch.from_numpy(masked_roi).float().to(self.device)
                 if min_size is not None:
-                    masked_roi = self.resize_roi(masked_roi, min_size)
-
-                rois[label] = masked_roi
+                    roi_tensor = dynamic_resize_roi(roi_tensor, min_size)
+                rois[label] = roi_tensor
         return rois
 
     @staticmethod
-    def resize_roi(image, min_size):
-        """Function to make ROIs of uniform size"""
-        # Check if the image is 3D (Z, H, W)
-        is_3d = image.ndim == 3
-
-        if is_3d:
-            image = image[0]
-
-        h, w = image.shape
-
-        if h < min_size and w < min_size:
-            # Pad the image
-            pad_height = max(0, min_size - h)
-            pad_width = max(0, min_size - w)
-            pad_top = pad_height // 2
-            pad_bottom = pad_height - pad_top
-            pad_left = pad_width // 2
-            pad_right = pad_width - pad_left
-
-            return np.pad(
-                image, ((pad_top, pad_bottom), (pad_left, pad_right)), mode="constant"
-            )
-        else:
-            # Resize the image
-            scale = min_size / max(h, w)
-            new_h, new_w = int(h * scale), int(w * scale)
-            resized = ndimage.zoom(image, (new_h / h, new_w / w), order=1)
-
-            # Pad if necessary after resizing
-            if new_h < min_size or new_w < min_size:
-                pad_h = max(0, min_size - new_h)
-                pad_w = max(0, min_size - new_w)
-                resized = np.pad(resized, ((0, pad_h), (0, pad_w)), mode="constant")
-
-            return resized
-
-    @staticmethod
-    def dict_to_numpy_stack(roi_dict):
-        """Efficient transformation of the numpy dict of ROIs to numpy stack"""
-
-        # Pre-allocate memory based on the shape of first object and dict lenght and fill
-        first_roi = next(iter(roi_dict.values()))
-        roi_shape = first_roi.shape
-        stack = np.zeros((len(roi_dict),) + roi_shape, dtype=first_roi.dtype)
-        labels = np.zeros(len(roi_dict), dtype=int)
-        for i, (label, roi) in enumerate(roi_dict.items()):
-            stack[i] = roi
-            labels[i] = label
-
+    def dict_to_torch_stack(roi_dict):
+        """Efficient transformation of the dict of PyTorch ROIs to a torch stack"""
+        # All tensors should already be on the same device from extract_rois_torch
+        roi_list = [roi if isinstance(roi, torch.Tensor) else torch.from_numpy(roi).float() for roi in roi_dict.values()]
+        stack = torch.stack(roi_list, dim=0)
+        labels = torch.tensor(list(roi_dict.keys()), dtype=torch.int64)
+        # Note: we don't move labels to device as they're only used for output indexing
         return stack, labels

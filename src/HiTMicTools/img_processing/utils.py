@@ -1,7 +1,8 @@
 import numpy as np
-from typing import List, Union, Optional, Dict
+import torch
+import torch.nn.functional as F
 import pandas as pd
-
+from typing import List, Union, Optional, Dict
 
 def map_predictions_to_labels(
     labeled_image: np.ndarray,
@@ -114,3 +115,49 @@ def measure_background_intensity(
     # Create a Pandas DataFrame to store the results
     bck_fl_df = pd.DataFrame({"frame": frames, "background": bck_intensities})
     return bck_fl_df
+
+
+@torch.compile(backend="eager")
+def dynamic_resize_roi(image: torch.Tensor, min_size: int) -> torch.Tensor:
+    """
+    Resize a region of interest (ROI) to a uniform size using PyTorch.
+    
+    This function resizes the input image to fit within min_size while maintaining
+    aspect ratio, then pads it to exactly min_size x min_size.
+    
+    Args:
+        image: Input tensor of shape (Z, H, W) or (H, W)
+        min_size: Target size for the output image
+        
+    Returns:
+        torch.Tensor: Resized and padded image of size (min_size, min_size)
+    """
+    # Check if the image is 3D (Z, H, W)
+    is_3d = len(image.shape) == 3
+    if is_3d:
+        image = image[0]
+    
+    h, w = image.shape
+    
+    if h > min_size or w > min_size:
+        # Calculate scaling to maintain aspect ratio (only downscale, never upscale)
+        scale = min_size / max(h, w)
+        new_h, new_w = int(h * scale), int(w * scale)
+        
+        # Add batch and channel dimensions for interpolation
+        image = image.unsqueeze(0).unsqueeze(0)  # [H,W] -> [1,1,H,W]
+        image = F.interpolate(image, size=(new_h, new_w), mode='bilinear', align_corners=False)
+        image = image.squeeze(0).squeeze(0)  # [1,1,H,W] -> [H,W]
+    
+    # Pad to target size
+    pad_h = max(0, min_size - image.shape[0])
+    pad_w = max(0, min_size - image.shape[1])
+    
+    if pad_h > 0 or pad_w > 0:
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        image = F.pad(image, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
+    
+    return image

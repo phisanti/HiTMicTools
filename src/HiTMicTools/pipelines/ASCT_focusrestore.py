@@ -238,6 +238,7 @@ class ASCT_focusRestoration(BasePipeline):
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
+        fl_measurements[['rel_max_intensity', 'rel_min_intensity', 'rel_mean_intensity']] = fl_measurements[['max_intensity', 'min_intensity', 'mean_intensity']].div(fl_measurements['background'], axis=0)
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
         img_logger.info(f"4 - Measurements completed", show_memory=True)
