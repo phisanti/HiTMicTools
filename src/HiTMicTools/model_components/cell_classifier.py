@@ -126,7 +126,7 @@ class CellClassifier(BaseModel):
         del preprocessed_rois, labeled_image, source_image, classifications
 
         self.cleanup()
-
+        labels = labels.cpu().numpy()
         return (
             (class_names, labels)
             if output_type == "class-str"
