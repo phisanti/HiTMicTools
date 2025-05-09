@@ -8,7 +8,7 @@ import numpy as np
 
 # Local imports
 from HiTMicTools.resource_management.memlogger import MemoryLogger
-from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
+from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device, wait_for_memory
 from HiTMicTools.workflows import BasePipeline
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.img_processing.array_ops import convert_image
@@ -74,7 +74,8 @@ class ASCT_focusRestoration(BasePipeline):
         """Pipeline analysis for each image."""
 
         # 1. Read Image:
-        is_cuda = get_device() == torch.device("cuda")
+        device=get_device()
+        is_cuda = device == torch.device("cuda")
         movie_name = remove_file_extension(name)
         name = movie_name
         img_logger = self.setup_logger(self.output_path, movie_name)
@@ -126,7 +127,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Intensity (BF) before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
-
+        wait_for_memory(required_gb=6, get_device=device)
         ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
             ip.img[:, 0, reference_channel],
             rescale=False,
@@ -139,6 +140,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Intensity (PI) before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
+        wait_for_memory(required_gb=6, get_device=device)
         ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
             ip.img[:, 0, pi_channel],
             batch_size=1,
@@ -166,6 +168,7 @@ class ASCT_focusRestoration(BasePipeline):
         ip.img_original = np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment Image --------------------------------------------
+        wait_for_memory(required_gb=6, get_device=device)
         img_logger.info(f"3.1 Image Segmentation", show_memory=True, cuda=is_cuda)
         prob_map = self.image_segmentator.predict(
             ip.img[:, 0, reference_channel, :, :],
@@ -201,6 +204,7 @@ class ASCT_focusRestoration(BasePipeline):
         # 3.3 Classify ROIs
         img_logger.info(f"3.2 - Classify ROIs", show_memory=True, cuda=is_cuda)
         # object_classes, labels=self.object_classifier.classify_rois(img_analyser.labeled_mask[:, 0,0], img_analyser.img[:, 0,0])
+        wait_for_memory(required_gb=8, get_device=device)
         object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=5)
         img_logger.info(f"3.2 GPU  Memory", show_memory=True, cuda=is_cuda)
 
@@ -332,7 +336,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(f"Analysis completed for {movie_name}", show_memory=True)
         del prob_map, img, fl_measurements, d_summary, img_analyser
         gc.collect()
-        empty_gpu_cache(get_device())
+        empty_gpu_cache(device)
         img_logger.info(f"Garbage collection completed", show_memory=True)
 
         self.remove_logger(img_logger)
