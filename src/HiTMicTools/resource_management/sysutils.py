@@ -146,6 +146,7 @@ def get_system_info() -> str:
 
 def wait_for_memory(
     required_gb: float = 4,
+    device: Optional[torch.device] = None,
     check_interval: int = 5,
     max_wait: int = 60,
     logger: Optional[Logger] = None,
@@ -155,7 +156,8 @@ def wait_for_memory(
     Wait until sufficient free memory is available or timeout occurs.
 
     Args:
-        required_gb (float): Minimum free memory required in GB.
+        required_gb (float): Minimum free memory required in GB. If 0, it will not wait.
+        device (torch.device, optional): The device to check memory for. If None, uses current active device.
         check_interval (int): Seconds between memory checks.
         max_wait (int): Maximum seconds to wait before timeout.
         logger (Logger, optional): Logger for status messages.
@@ -165,11 +167,34 @@ def wait_for_memory(
         bool: True if sufficient memory became available, False if timed out.
 
     Raises:
-        MemoryError: If raise_on_timeout is True and wait times out.
+        MemoryError: If raise_on_timeout is True and wait times out or required memory exceeds total system memory.
     """
+    
+    if not required_gb:
+        return True
+    
+    if device is None:
+        device = get_device()
+
+    if device.type == "cuda":
+        total_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
+    else:
+        total_gb = psutil.virtual_memory().total / (1024 ** 3)
+    
+    if required_gb > total_gb:
+        msg = (
+            f"Requested memory ({required_gb:.2f} GB) exceeds total memory on {device.type} "
+            f"({total_gb:.2f} GB)."
+        )
+        if logger:
+            logger.error(msg)
+        if raise_on_timeout:
+            raise MemoryError(msg)
+        return False
+
     start_time = time.time()
     while True:
-        free_mem = get_memory_usage(free=True, unit="GB")
+        free_mem = get_memory_usage(free=True, device=device, unit="GB")
         if free_mem >= required_gb:
             if logger:
                 logger.info(f"Sufficient memory available: {free_mem:.2f} GB")
