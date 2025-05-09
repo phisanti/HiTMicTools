@@ -38,12 +38,12 @@ class FocusRestorer(BaseModel):
             half_precision (bool, optional): Whether to use half-precision (FP16) for inference. Defaults to False.
         """
 
-        assert (
-            isinstance(patch_size, int) and patch_size > 0
-        ), "patch_size must be a positive integer"
-        assert (
-            isinstance(overlap_ratio, float) and 0 <= overlap_ratio < 1
-        ), "overlap_ratio must be a float between 0 and 1"
+        assert isinstance(patch_size, int) and patch_size > 0, (
+            "patch_size must be a positive integer"
+        )
+        assert isinstance(overlap_ratio, float) and 0 <= overlap_ratio < 1, (
+            "overlap_ratio must be a float between 0 and 1"
+        )
 
         assert scale_method in [
             "range01",
@@ -53,14 +53,14 @@ class FocusRestorer(BaseModel):
         ], "Invalid scale method"
         # Validate scaler arguments based on method
         if scale_method == "fixed_range":
-            assert (
-                "bit_depth" in scaler_args
-            ), "bit_depth required for fixed_range scaling"
+            assert "bit_depth" in scaler_args, (
+                "bit_depth required for fixed_range scaling"
+            )
         elif scale_method in ["range01", "combined"]:
             if "pmin" in scaler_args and "pmax" in scaler_args:
-                assert (
-                    0 <= scaler_args["pmin"] < scaler_args["pmax"] <= 100
-                ), "pmin/pmax must be 0 <= pmin < pmax <= 100"
+                assert 0 <= scaler_args["pmin"] < scaler_args["pmax"] <= 100, (
+                    "pmin/pmax must be 0 <= pmin < pmax <= 100"
+                )
 
         self.device = get_device()
         self.model = self.get_model(

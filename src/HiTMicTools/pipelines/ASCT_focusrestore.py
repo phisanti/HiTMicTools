@@ -17,7 +17,6 @@ from HiTMicTools.img_processing.utils import (
 from HiTMicTools.utils import (
     get_timestamps,
     convert_image,
-    get_memory_usage,
     remove_file_extension,
     get_device,
     empty_gpu_cache,
@@ -91,7 +90,7 @@ class ASCT_focusRestoration(BasePipeline):
         align_frames = self.align_frames
         method = self.method
 
-        img_logger.info(f"1 - Reading image, Memory:{get_memory_usage()}")
+        img_logger.info(f"1 - Reading image, Memory", show_memory=True)
         image_reader = ImageReader(file_i, self.file_type)
         img, metadata = image_reader.read_image()
         pixel_size = metadata.images[0].pixels.physical_size_x
@@ -109,7 +108,7 @@ class ASCT_focusRestoration(BasePipeline):
         img = np.zeros((1, 1, 1, 1))  # Remove img to save memory
 
         # 2.1 Remove background
-        img_logger.info(f"2.1 - Preprocessing image", show_memory=True)
+        img_logger.info(f"2.1 - Preprocessing image.", show_memory=True)
         img_logger.info(f"Image shape {ip.img.shape}")
         img_logger.info(
             f"Intensity before clear background:\n{self.check_px_values(ip, reference_channel, round=3)}"
@@ -238,7 +237,11 @@ class ASCT_focusRestoration(BasePipeline):
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
-        fl_measurements[['rel_max_intensity', 'rel_min_intensity', 'rel_mean_intensity']] = fl_measurements[['max_intensity', 'min_intensity', 'mean_intensity']].div(fl_measurements['background'], axis=0)
+        fl_measurements[
+            ["rel_max_intensity", "rel_min_intensity", "rel_mean_intensity"]
+        ] = fl_measurements[["max_intensity", "min_intensity", "mean_intensity"]].div(
+            fl_measurements["background"], axis=0
+        )
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
         img_logger.info(f"4 - Measurements completed", show_memory=True)
@@ -311,13 +314,15 @@ class ASCT_focusRestoration(BasePipeline):
                 combined_mask = np.stack([object_class_mask, pi_class_mask], axis=1)
                 labs_8bit = combined_mask.astype(np.uint8)
                 axes = "TCYX"
-                log_msg = "Exported labeled mask with object and PI classification channels"
+                log_msg = (
+                    "Exported labeled mask with object and PI classification channels"
+                )
             else:
                 # If no PI classifier, just save the object classification channel
                 labs_8bit = object_class_mask.astype(np.uint8)
                 axes = "TYX"
                 log_msg = "Exported labeled mask with object classification channel"
-            
+
             # Save the labeled mask with appropriate metadata
             tifffile.imwrite(
                 export_path + "_labels.tiff",
@@ -490,9 +495,7 @@ class ASCT_focusRestoration(BasePipeline):
             )
             d_summary = pd.DataFrame()
 
-        img_logger.info(
-            f"d_summary created successfully. Memory usage: {get_memory_usage()}"
-        )
+        img_logger.info(f"d_summary created successfully.", show_memory=True)
 
         return d_summary
 

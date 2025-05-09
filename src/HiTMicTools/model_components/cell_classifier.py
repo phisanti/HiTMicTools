@@ -52,13 +52,13 @@ class CellClassifier(BaseModel):
         batch_size: int = 1024,
     ):
         # Safety checks
-        assert min_size is None or (
-            isinstance(min_size, int) and min_size > 0
-        ), "min_size must be None or a positive integer"
+        assert min_size is None or (isinstance(min_size, int) and min_size > 0), (
+            "min_size must be None or a positive integer"
+        )
         assert isinstance(device, torch.device), "device must be a valid torch device"
-        assert classes is None or isinstance(
-            classes, dict
-        ), "classes must be None or a dictionary"
+        assert classes is None or isinstance(classes, dict), (
+            "classes must be None or a dictionary"
+        )
         assert os.path.exists(model_path), f"Model file not found at path: {model_path}"
 
         # Load attributes
@@ -142,7 +142,9 @@ class CellClassifier(BaseModel):
 
     def extract_rois(self, labeled_image, source_image, min_size=None):
         """Crop ROIs from the image and make uniform size for classification using torch-based resizing."""
-        assert labeled_image.shape == source_image.shape, "Images must have the same shape"
+        assert labeled_image.shape == source_image.shape, (
+            "Images must have the same shape"
+        )
         rois = {}
         for label, slices in enumerate(ndimage.find_objects(labeled_image), start=1):
             if slices is not None:
@@ -160,7 +162,10 @@ class CellClassifier(BaseModel):
     def dict_to_torch_stack(roi_dict):
         """Efficient transformation of the dict of PyTorch ROIs to a torch stack"""
         # All tensors should already be on the same device from extract_rois_torch
-        roi_list = [roi if isinstance(roi, torch.Tensor) else torch.from_numpy(roi).float() for roi in roi_dict.values()]
+        roi_list = [
+            roi if isinstance(roi, torch.Tensor) else torch.from_numpy(roi).float()
+            for roi in roi_dict.values()
+        ]
         stack = torch.stack(roi_list, dim=0)
         labels = torch.tensor(list(roi_dict.keys()), dtype=torch.int64)
         # Note: we don't move labels to device as they're only used for output indexing

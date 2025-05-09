@@ -57,12 +57,12 @@ class Segmentator(BaseModel):
             half_precision (bool, optional): Whether to use half-precision (FP16) for inference. Defaults to False.
         """
 
-        assert (
-            isinstance(patch_size, int) and patch_size > 0
-        ), "patch_size must be a positive integer"
-        assert (
-            isinstance(overlap_ratio, float) and 0 <= overlap_ratio < 1
-        ), "overlap_ratio must be a float between 0 and 1"
+        assert isinstance(patch_size, int) and patch_size > 0, (
+            "patch_size must be a positive integer"
+        )
+        assert isinstance(overlap_ratio, float) and 0 <= overlap_ratio < 1, (
+            "overlap_ratio must be a float between 0 and 1"
+        )
         assert scale_method in [
             "range01",
             "zscore",

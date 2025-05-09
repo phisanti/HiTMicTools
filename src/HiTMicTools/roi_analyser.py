@@ -115,9 +115,9 @@ class RoiAnalyser:
                 for a single ROI.
         """
 
-        assert (
-            self.labeled_mask is not None
-        ), "Run get_labels() first to generate labeled mask"
+        assert self.labeled_mask is not None, (
+            "Run get_labels() first to generate labeled mask"
+        )
 
         img = self.img[:, target_slice, target_channel, :, :]
         labeled_mask = self.labeled_mask[:, target_slice, 0, :, :]

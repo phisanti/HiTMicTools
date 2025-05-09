@@ -130,7 +130,7 @@ def generate_slurm_template(
 
     # Add array job if using file blocks
     if file_blocks:
-        template.append(f"#SBATCH --array=0-{n_blocks-1}")
+        template.append(f"#SBATCH --array=0-{n_blocks - 1}")
 
     # Add modules and environment setup
     template.extend(

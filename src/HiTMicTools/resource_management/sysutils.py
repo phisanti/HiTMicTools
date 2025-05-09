@@ -1,10 +1,11 @@
-import torch
-import psutil
+import gc
 import platform
 import time
-import gc
 from typing import Optional, Union
 from logging import Logger
+
+import psutil
+import torch
 
 
 def empty_gpu_cache(device: Optional[torch.device] = None) -> None:
@@ -17,7 +18,7 @@ def empty_gpu_cache(device: Optional[torch.device] = None) -> None:
     """
     if device is None:
         device = get_device()
-        
+
     if device.type == "cuda":
         torch.cuda.empty_cache()
     elif device.type == "mps":
@@ -40,24 +41,29 @@ def get_device() -> torch.device:
         return torch.device("cpu")
 
 
-def get_memory_usage(device: Optional[torch.device] = None, free: bool = False, unit: str = "MB", as_string: bool = False) -> Union[float, str]:
+def get_memory_usage(
+    device: Optional[torch.device] = None,
+    free: bool = False,
+    unit: str = "MB",
+    as_string: bool = False,
+) -> Union[float, str]:
     """
     Get the memory usage for the specified device or process.
-    
+
     Args:
         device (torch.device, optional): The device to get memory for. If None, uses current active device.
         free (bool): If True, return free memory. If False, return used memory. Defaults to False.
         unit (str): Unit for memory measurement. Either 'MB' or 'GB'. Defaults to 'MB'.
         as_string (bool): If True, returns formatted string with units. If False, returns float. Defaults to False.
-        
+
     Returns:
         Union[float, str]: Memory usage in specified units, either as float or formatted string.
     """
     if unit not in ["MB", "GB"]:
         raise ValueError("Unit must be either 'MB' or 'GB'")
-    
+
     divisor = 1024 * 1024 if unit == "MB" else 1024 * 1024 * 1024
-    
+
     # If no device specified, get the current active device
     if device is None:
         if torch.cuda.is_available():
@@ -66,12 +72,14 @@ def get_memory_usage(device: Optional[torch.device] = None, free: bool = False, 
             device = torch.device("mps")
         else:
             device = torch.device("cpu")
-    
+
     # Get memory based on device type
     if device.type == "cuda":
         if free:
-            memory_value = (torch.cuda.get_device_properties(device).total_memory - 
-                           torch.cuda.memory_allocated(device)) / divisor
+            memory_value = (
+                torch.cuda.get_device_properties(device).total_memory
+                - torch.cuda.memory_allocated(device)
+            ) / divisor
         else:
             memory_value = torch.cuda.memory_allocated(device) / divisor
     else:
@@ -87,7 +95,7 @@ def get_memory_usage(device: Optional[torch.device] = None, free: bool = False, 
             process = psutil.Process()
             memory_info = process.memory_info()
             memory_value = memory_info.rss / divisor
-    
+
     if as_string:
         return f"{memory_value:.2f} {unit}"
     return memory_value
@@ -117,9 +125,11 @@ def get_system_info() -> str:
         for i in range(num_gpus):
             device = torch.device(f"cuda:{i}")
             props = torch.cuda.get_device_properties(device)
-            total_mem = props.total_memory / (1024 ** 3)
-            used_mem = torch.cuda.memory_allocated(device) / (1024 ** 3)
-            free_mem = (props.total_memory - torch.cuda.memory_allocated(device)) / (1024 ** 3)
+            total_mem = props.total_memory / (1024**3)
+            used_mem = torch.cuda.memory_allocated(device) / (1024**3)
+            free_mem = (props.total_memory - torch.cuda.memory_allocated(device)) / (
+                1024**3
+            )
             info += f"GPU {i}: {props.name}\n"
             info += f"  Memory: {used_mem:.2f}GB used / {total_mem:.2f}GB total ({free_mem:.2f}GB free)\n"
             # Utilization is not available via PyTorch, so we note this
@@ -135,7 +145,7 @@ def wait_for_memory(
     check_interval: int = 5,
     max_wait: int = 60,
     logger: Optional[Logger] = None,
-    raise_on_timeout: bool = False
+    raise_on_timeout: bool = False,
 ) -> bool:
     """
     Wait until sufficient free memory is available or timeout occurs.
