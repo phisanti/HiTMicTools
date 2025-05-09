@@ -21,11 +21,12 @@ from abc import ABC, abstractmethod
 
 # Local imports
 from HiTMicTools import __version__
-from HiTMicTools.memlogger import MemoryLogger
+from HiTMicTools.resource_management.memlogger import MemoryLogger
 from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
-from HiTMicTools.utils import get_system_info, read_metadata, get_device
+from HiTMicTools.resource_management.sysutils import get_device, get_system_info
+from HiTMicTools.utils import read_metadata
 from HiTMicTools.model_arch.nafnet import NAFNet
 from HiTMicTools.model_arch.flexresnet import FlexResNet
 from HiTMicTools.model_components.pi_classifier import PIClassifier

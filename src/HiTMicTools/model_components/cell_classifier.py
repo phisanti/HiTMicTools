@@ -14,8 +14,9 @@ from monai.networks.blocks import Convolution, ResidualUnit
 
 # Local imports
 from HiTMicTools.model_components.base_model import BaseModel
-from HiTMicTools.utils import get_device
-from HiTMicTools.img_processing.utils import dynamic_resize_roi
+from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
+from HiTMicTools.img_processing.img_ops import dynamic_resize_roi
+
 
 # Type hints
 from typing import Any, Dict, List, Optional, Tuple, Union

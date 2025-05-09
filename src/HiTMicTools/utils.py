@@ -5,7 +5,6 @@ from datetime import timedelta
 from typing import Dict, Any
 
 # Third-party imports
-import numpy as np
 import pandas as pd
 import ome_types
 

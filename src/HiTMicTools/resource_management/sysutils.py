@@ -1,4 +1,6 @@
 import gc
+import os
+import sys
 import platform
 import time
 from typing import Optional, Union
@@ -110,15 +112,17 @@ def get_system_info() -> str:
     """
     cpu_percent = psutil.cpu_percent()
     memory = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
-    cpu_model = platform.processor()
+    mem_percent = memory.used / memory.total * 100
 
+    cpu_model = platform.processor()
     info = f"System Information:\n"
     info += f"OS: {platform.system()} {platform.release()}\n"
+    info += f"Python: {platform.python_version()} ({sys.executable})\n"
     info += f"CPU Model: {cpu_model}\n"
+    info += f"CPU Cores: {os.cpu_count()}\n"
     info += f"CPU Usage: {cpu_percent}%\n"
-    info += f"Memory: {memory.percent}% used ({memory.used / (1024**3):.2f}GB / {memory.total / (1024**3):.2f}GB)\n"
-    info += f"Disk: {disk.percent}% used ({disk.used / (1024**3):.2f}GB / {disk.total / (1024**3):.2f}GB)\n"
+
+    info += f"Memory: {mem_percent:.2f}% used ({memory.used / (1024**3):.2f}GB / {memory.total / (1024**3):.2f}GB)\n"
 
     if torch.cuda.is_available():
         num_gpus = torch.cuda.device_count()

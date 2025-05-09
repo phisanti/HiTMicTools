@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from typing import Tuple, Optional, Union, Any
-from HiTMicTools.utils import empty_gpu_cache, get_device
+from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
 import gc
 
 

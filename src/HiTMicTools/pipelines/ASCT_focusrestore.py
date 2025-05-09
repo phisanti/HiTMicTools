@@ -7,20 +7,14 @@ import pandas as pd
 import numpy as np
 
 # Local imports
-from HiTMicTools.memlogger import MemoryLogger
+from HiTMicTools.resource_management.memlogger import MemoryLogger
+from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
 from HiTMicTools.workflows import BasePipeline
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
-from HiTMicTools.img_processing.utils import (
-    measure_background_intensity,
-    map_predictions_to_labels,
-)
-from HiTMicTools.utils import (
-    get_timestamps,
-    convert_image,
-    remove_file_extension,
-    get_device,
-    empty_gpu_cache,
-)
+from HiTMicTools.img_processing.array_ops import convert_image
+from HiTMicTools.img_processing.img_ops import measure_background_intensity
+from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels
+from HiTMicTools.utils import get_timestamps, remove_file_extension
 from HiTMicTools.roi_analyser import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 

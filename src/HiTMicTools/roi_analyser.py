@@ -9,7 +9,7 @@ from scipy.ndimage import label
 from skimage.measure import regionprops_table
 
 # Local imports
-from HiTMicTools.utils import adjust_dimensions, stack_indexer
+from HiTMicTools.img_processing.array_ops import adjust_dimensions
 
 # Type hints
 from numpy.typing import NDArray
