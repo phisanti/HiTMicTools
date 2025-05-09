@@ -3,22 +3,26 @@ import psutil
 import platform
 import time
 import gc
-from typing import Optional
+from typing import Optional, Union
 from logging import Logger
 
 
-def empty_gpu_cache(device: torch.device) -> None:
+def empty_gpu_cache(device: Optional[torch.device] = None) -> None:
     """
-    Clear the GPU cache.
+    Clear the GPU cache for the specified device.
 
     Args:
-        device (torch.device): The device to clear the cache for.
+        device (torch.device, optional): The device to clear the cache for.
+            If None, uses the current active device.
     """
-    # Clear the GPU cache
+    if device is None:
+        device = get_device()
+        
     if device.type == "cuda":
         torch.cuda.empty_cache()
     elif device.type == "mps":
-        torch.mps.empty_cache()
+        if hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
 
 
 def get_device() -> torch.device:
@@ -30,61 +34,68 @@ def get_device() -> torch.device:
     """
     if torch.cuda.is_available():
         return torch.device("cuda")
-    elif torch.backends.mps.is_available():
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     else:
         return torch.device("cpu")
 
 
-def get_memory_usage() -> str:
+def get_memory_usage(device: Optional[torch.device] = None, free: bool = False, unit: str = "MB", as_string: bool = False) -> Union[float, str]:
     """
-    Get the current memory usage of the process.
-
-    Returns:
-        str: Memory usage in MB.
-    """
-    process = psutil.Process()
-    memory_info = process.memory_info()
-    return f"{memory_info.rss / (1024 * 1024):.2f} MB"
-
-
-def get_device_memory_usage(free: bool = False, unit: str = "MB") -> float:
-    """
-    Get the current memory usage or free memory for the active PyTorch device (CUDA, MPS, or CPU).
-
+    Get the memory usage for the specified device or process.
+    
     Args:
+        device (torch.device, optional): The device to get memory for. If None, uses current active device.
         free (bool): If True, return free memory. If False, return used memory. Defaults to False.
         unit (str): Unit for memory measurement. Either 'MB' or 'GB'. Defaults to 'MB'.
-
+        as_string (bool): If True, returns formatted string with units. If False, returns float. Defaults to False.
+        
     Returns:
-        float: Memory usage or free memory in specified units.
+        Union[float, str]: Memory usage in specified units, either as float or formatted string.
     """
     if unit not in ["MB", "GB"]:
         raise ValueError("Unit must be either 'MB' or 'GB'")
-
+    
     divisor = 1024 * 1024 if unit == "MB" else 1024 * 1024 * 1024
-
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        if free:
-            memory_free = torch.cuda.get_device_properties(
-                device
-            ).total_memory - torch.cuda.memory_allocated(device)
-            return memory_free / divisor
+    
+    # If no device specified, get the current active device
+    if device is None:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            device = torch.device("mps")
         else:
-            return torch.cuda.memory_allocated(device) / divisor
+            device = torch.device("cpu")
+    
+    # Get memory based on device type
+    if device.type == "cuda":
+        if free:
+            memory_value = (torch.cuda.get_device_properties(device).total_memory - 
+                           torch.cuda.memory_allocated(device)) / divisor
+        else:
+            memory_value = torch.cuda.memory_allocated(device) / divisor
     else:
-        # For both CPU and MPS (Apple Silicon), we use system memory
-        system_memory = psutil.virtual_memory()
-        if free:
-            return system_memory.available / divisor
+        # For both CPU and MPS (Apple Silicon), use system memory
+        if device.type == "cpu" or device.type == "mps":
+            system_memory = psutil.virtual_memory()
+            if free:
+                memory_value = system_memory.available / divisor
+            else:
+                memory_value = (system_memory.total - system_memory.available) / divisor
         else:
-            return (system_memory.total - system_memory.available) / divisor
+            # For process memory (backward compatibility with old get_memory_usage)
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            memory_value = memory_info.rss / divisor
+    
+    if as_string:
+        return f"{memory_value:.2f} {unit}"
+    return memory_value
 
 
 def get_system_info() -> str:
     """
-    Get detailed system information including CPU, memory, disk, and GPU usage.
+    Get detailed system information including CPU, memory, disk, and GPU usage (without GPUtil).
 
     Returns:
         str: Formatted string containing system information.
@@ -101,14 +112,18 @@ def get_system_info() -> str:
     info += f"Memory: {memory.percent}% used ({memory.used / (1024**3):.2f}GB / {memory.total / (1024**3):.2f}GB)\n"
     info += f"Disk: {disk.percent}% used ({disk.used / (1024**3):.2f}GB / {disk.total / (1024**3):.2f}GB)\n"
 
-    if get_device().type == "cuda":
-        import GPUtil
-
-        gpus = GPUtil.getGPUs()
-        for i, gpu in enumerate(gpus):
-            info += f"GPU {i}: {gpu.name}\n"
-            info += f"  Memory: {gpu.memoryUsed}MB / {gpu.memoryTotal}MB\n"
-            info += f"  GPU utilization: {gpu.load*100}%\n"
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        for i in range(num_gpus):
+            device = torch.device(f"cuda:{i}")
+            props = torch.cuda.get_device_properties(device)
+            total_mem = props.total_memory / (1024 ** 3)
+            used_mem = torch.cuda.memory_allocated(device) / (1024 ** 3)
+            free_mem = (props.total_memory - torch.cuda.memory_allocated(device)) / (1024 ** 3)
+            info += f"GPU {i}: {props.name}\n"
+            info += f"  Memory: {used_mem:.2f}GB used / {total_mem:.2f}GB total ({free_mem:.2f}GB free)\n"
+            # Utilization is not available via PyTorch, so we note this
+            info += f"  GPU utilization: Not available via PyTorch\n"
     else:
         info += "No GPUs detected\n"
 
@@ -140,7 +155,7 @@ def wait_for_memory(
     """
     start_time = time.time()
     while True:
-        free_mem = get_device_memory_usage(free=True, unit="GB")
+        free_mem = get_memory_usage(free=True, unit="GB")
         if free_mem >= required_gb:
             if logger:
                 logger.info(f"Sufficient memory available: {free_mem:.2f} GB")
