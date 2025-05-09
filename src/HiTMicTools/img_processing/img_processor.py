@@ -1,15 +1,15 @@
 import cv2
 import numpy as np
-from typing import Union, List, Tuple, Optional, Dict
+from typing import Union, List, Optional, Dict
 from pystackreg import StackReg
 from basicpy import BaSiC
-from HiTMicTools.img_processing.funcs import (
+from .img_ops import (
     clear_background,
     norm_eq_hist,
     crop_black_region,
     detect_and_fix_well,
 )
-from HiTMicTools.utils import (
+from .array_ops import (
     adjust_dimensions,
     stack_indexer,
     get_bit_depth,
@@ -77,9 +77,9 @@ class ImagePreprocessor:
             None
         """
         # check that compress_align is between 0-1
-        assert (
-            compres_align >= 0 and compres_align <= 1
-        ), "compress_align must be between 0 and 1"
+        assert compres_align >= 0 and compres_align <= 1, (
+            "compress_align must be between 0 and 1"
+        )
 
         # Align with reference channel
         reference_channel = self.img[:, nslices, nchannel, :, :]
@@ -330,3 +330,121 @@ class ImagePreprocessor:
             )
 
         assert max_value <= size_limit, f"{name} exceeds image dimensions"
+
+
+if __name__ == "__main__":
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    # Create a simple test image stack
+    # Shape: (frames, slices, channels, height, width)
+    print("Creating test image stack...")
+    frames, slices, channels = 5, 2, 3
+    height, width = 100, 100
+    
+    # Create a base image with a bright spot in the middle
+    base_img = np.zeros((height, width), dtype=np.float32)
+    y, x = np.ogrid[-height//2:height//2, -width//2:width//2]
+    mask = x**2 + y**2 <= (width//4)**2
+    base_img[mask] = 1.0
+    
+    # Add some noise and background gradient
+    np.random.seed(42)
+    x_grad, y_grad = np.meshgrid(np.linspace(0, 0.5, width), np.linspace(0, 0.5, height))
+    gradient = x_grad + y_grad
+    
+    # Create the image stack
+    img_stack = np.zeros((frames, slices, channels, height, width), dtype=np.float32)
+    
+    for t in range(frames):
+        for s in range(slices):
+            for c in range(channels):
+                # Add time-varying position
+                shift_y = int(10 * np.sin(t * np.pi / 10))
+                shift_x = int(10 * np.cos(t * np.pi / 10))
+                
+                # Create shifted image
+                shifted_img = np.roll(base_img, (shift_y, shift_x), axis=(0, 1))
+                
+                # Add channel-specific intensity and noise
+                intensity = 1.0 + 0.2 * c
+                noise_level = 0.05 + 0.02 * s
+                
+                # Combine components
+                final_img = intensity * shifted_img + gradient + noise_level * np.random.randn(height, width)
+                img_stack[t, s, c] = final_img
+    
+    print(f"Created image stack with shape: {img_stack.shape}")
+    
+    # Initialize the ImagePreprocessor
+    print("Initializing ImagePreprocessor...")
+    processor = ImagePreprocessor(img_stack, pixel_size=0.65, stack_order="TSCXY")
+    
+    # Test alignment
+    print("Testing image alignment...")
+    processor.align_image(nchannel=0, nslices=0)
+    print(f"Aligned image shape: {processor.img.shape}")
+    
+    # Test background removal
+    print("Testing background removal...")
+    processor.clear_image_background(
+        nframes=range(frames),
+        nslices=range(slices),
+        nchannels=range(channels),
+        method="subtract",
+        sigma_r=15
+    )
+    
+    # Test histogram normalization
+    print("Testing histogram normalization...")
+    processor.norm_eq_hist(
+        nframes=range(frames),
+        nslices=range(slices),
+        nchannels=range(channels)
+    )
+    
+    # Test channel scaling
+    print("Testing channel scaling...")
+    processor.scale_channel(
+        nframes=range(frames),
+        nslices=range(slices),
+        nchannels=range(channels)
+    )
+    
+    # Visualize results
+    try:
+        plt.figure(figsize=(15, 10))
+        
+        # Original image
+        plt.subplot(2, 3, 1)
+        plt.imshow(processor.img_original[0, 0, 0], cmap='gray')
+        plt.title("Original (Frame 0, Slice 0, Channel 0)")
+        
+        # Processed image
+        plt.subplot(2, 3, 2)
+        plt.imshow(processor.img[0, 0, 0], cmap='gray')
+        plt.title("Processed (Frame 0, Slice 0, Channel 0)")
+        
+        # Different channel
+        plt.subplot(2, 3, 3)
+        plt.imshow(processor.img[0, 0, 1], cmap='gray')
+        plt.title("Processed (Frame 0, Slice 0, Channel 1)")
+        
+        # Different frame
+        plt.subplot(2, 3, 4)
+        plt.imshow(processor.img[2, 0, 0], cmap='gray')
+        plt.title("Processed (Frame 2, Slice 0, Channel 0)")
+        
+        # Different slice
+        plt.subplot(2, 3, 5)
+        plt.imshow(processor.img[0, 1, 0], cmap='gray')
+        plt.title("Processed (Frame 0, Slice 1, Channel 0)")
+        
+        plt.tight_layout()
+        plt.savefig("image_processor_test.png")
+        print("Visualization saved to 'image_processor_test.png'")
+        plt.close()
+    except ImportError:
+        print("Matplotlib not available for visualization")
+    
+    print("All tests completed successfully!")
