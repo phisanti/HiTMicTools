@@ -127,7 +127,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Intensity (BF) before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
-        wait_for_memory(required_gb=6, get_device=device)
+        wait_for_memory(required_gb=6, device=device)
         ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
             ip.img[:, 0, reference_channel],
             rescale=False,
@@ -140,7 +140,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Intensity (PI) before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
-        wait_for_memory(required_gb=6, get_device=device)
+        wait_for_memory(required_gb=6, device=device)
         ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
             ip.img[:, 0, pi_channel],
             batch_size=1,
@@ -168,7 +168,7 @@ class ASCT_focusRestoration(BasePipeline):
         ip.img_original = np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment Image --------------------------------------------
-        wait_for_memory(required_gb=6, get_device=device)
+        wait_for_memory(required_gb=6, device=device)
         img_logger.info(f"3.1 Image Segmentation", show_memory=True, cuda=is_cuda)
         prob_map = self.image_segmentator.predict(
             ip.img[:, 0, reference_channel, :, :],
@@ -204,7 +204,7 @@ class ASCT_focusRestoration(BasePipeline):
         # 3.3 Classify ROIs
         img_logger.info(f"3.2 - Classify ROIs", show_memory=True, cuda=is_cuda)
         # object_classes, labels=self.object_classifier.classify_rois(img_analyser.labeled_mask[:, 0,0], img_analyser.img[:, 0,0])
-        wait_for_memory(required_gb=8, get_device=device)
+        wait_for_memory(required_gb=8, device=device)
         object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=5)
         img_logger.info(f"3.2 GPU  Memory", show_memory=True, cuda=is_cuda)
 
