@@ -5,8 +5,6 @@ from HiTMicTools.utils import read_metadata
 from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
-from HiTMicTools.model_arch.nafnet import NAFNet
-from HiTMicTools.model_arch.flexresnet import FlexResNet
 
 
 def build_and_run_pipeline(config_file: str, worklist: str = None):
