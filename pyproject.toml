@@ -33,7 +33,6 @@ dependencies = [
     "tifffile",
     "monai",
     "pystackreg",
-    "GPUtil",
     "psutil",
     "nd2",
     "opencv-python",
