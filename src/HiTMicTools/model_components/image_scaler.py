@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 
 # Local imports
-from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
+from HiTMicTools.resource_management.sysutils import get_device
 
 
 class ImageScaler:

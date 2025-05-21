@@ -4,7 +4,7 @@ from typing import Any
 from .image_scaler import ImageScaler
 from .base_model import BaseModel
 from monai.inferers import SlidingWindowInferer
-from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
+from HiTMicTools.resource_management.sysutils import get_device
 
 
 class FocusRestorer(BaseModel):

@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import pandas as pd
-from typing import Union, List, Tuple, Optional, Dict
+from typing import Union, Tuple
 
 from HiTMicTools.utils import (
     round_to_odd,

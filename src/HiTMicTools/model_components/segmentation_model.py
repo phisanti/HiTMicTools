@@ -4,7 +4,7 @@ from typing import Any
 from monai.inferers import SlidingWindowInferer
 from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.model_components.image_scaler import ImageScaler
-from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
+from HiTMicTools.resource_management.sysutils import get_device
 
 
 class Segmentator(BaseModel):

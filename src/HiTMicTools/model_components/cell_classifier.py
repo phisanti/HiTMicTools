@@ -1,16 +1,11 @@
 # Standard library imports
-import gc
-import json
 import os
-import sys
 
 # Third-party library imports
 import numpy as np
 from scipy import ndimage
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from monai.networks.blocks import Convolution, ResidualUnit
 
 # Local imports
 from HiTMicTools.model_components.base_model import BaseModel
