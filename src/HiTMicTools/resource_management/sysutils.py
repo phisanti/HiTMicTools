@@ -169,18 +169,18 @@ def wait_for_memory(
     Raises:
         MemoryError: If raise_on_timeout is True and wait times out or required memory exceeds total system memory.
     """
-    
+
     if not required_gb:
         return True
-    
+
     if device is None:
         device = get_device()
 
     if device.type == "cuda":
-        total_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
+        total_gb = torch.cuda.get_device_properties(device).total_memory / (1024**3)
     else:
-        total_gb = psutil.virtual_memory().total / (1024 ** 3)
-    
+        total_gb = psutil.virtual_memory().total / (1024**3)
+
     if required_gb > total_gb:
         msg = (
             f"Requested memory ({required_gb:.2f} GB) exceeds total memory on {device.type} "
