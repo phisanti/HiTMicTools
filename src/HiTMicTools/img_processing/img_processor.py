@@ -56,9 +56,10 @@ class ImagePreprocessor:
 
     def align_image(
         self,
-        nchannel: int,
-        nslices: int,
+        ref_channel: int,
+        ref_slice: int,
         compres_align: float = 0,
+        normalise_image: bool = True,
         crop_image: bool = True,
         **kwargs,
     ) -> None:
@@ -66,8 +67,8 @@ class ImagePreprocessor:
         Align the image using a reference channel.
 
         Args:
-            nchannel (int): Reference channel index.
-            nslices (int): Reference slice index.
+            ref_channel (int): Reference channel index.
+            ref_slice (int): Reference slice index.
             compres_align (float, default=0): Compression ratio to crop image for alignment. Speed up
             alignment for very large images and long stacks.
             crop_image (bool, default=True): Whether to crop the black region after alignment.
@@ -82,7 +83,10 @@ class ImagePreprocessor:
         )
 
         # Align with reference channel
-        reference_channel = self.img[:, nslices, nchannel, :, :]
+        reference_channel = self.img[:, ref_slice, ref_channel, :, :]
+        
+        if normalise_image:
+            reference_channel = reference_channel / np.mean(reference_channel, axis=(1, 2), keepdims=True)
 
         if compres_align > 0:
             b, h, w = reference_channel.shape
@@ -92,26 +96,64 @@ class ImagePreprocessor:
             w_end = w - w_start
             reference_channel = reference_channel[:, h_start:h_end, w_start:w_end]
 
-        sr = StackReg(StackReg.TRANSLATION)
-        self.tmats = sr.register_stack(reference_channel, **kwargs)
+        self.sr = StackReg(StackReg.TRANSLATION)
+        self.tmats = self.sr.register_stack(reference_channel, **kwargs)
 
         # Apply transform to other channels/slices
-        index_table = stack_indexer(
-            range(self.frames_size), range(self.slices_size), range(self.channels_size)
-        )
-        index_table_sc = [(s, c) for t, s, c in index_table]
-        index_table_sc = set(index_table_sc)
+        index_table = stack_indexer(0, range(self.slices_size), range(self.channels_size))
 
-        for c, s in index_table_sc:
-            c, s = c - 1, s - 1
-            img_stack = self.img[:, c, s, :, :]
-            reg_stack = sr.transform_stack(img_stack, tmats=self.tmats)
-            self.img[:, c, s, :, :] = reg_stack
+        for _t, s, c in index_table:
+            img_stack = self.img[:, s, c, :, :]
+            registered_stack = self.sr.transform_stack(img_stack, tmats=self.tmats)
+            self.img[:, s, c, :, :] = registered_stack
 
         if crop_image:
-            min_projection = np.min(reference_channel, axis=0)
-            start_h, end_h, start_w, end_w = crop_black_region(min_projection)
+            # If compressed, resize to the original size
+            if compres_align > 0:
+                reg_stack = self.img[:, ref_channel, ref_slice]
+                original_h, original_w = self.img.shape[-2:]
+                min_projection_compressed = np.min(reg_stack, axis=0)
+                min_projection = cv2.resize(
+                    min_projection_compressed, 
+                    (original_w, original_h), 
+                    interpolation=cv2.INTER_LINEAR
+                )
+                start_h, end_h, start_w, end_w = crop_black_region(min_projection)
+            else:
+                min_projection = np.min(reference_channel, axis=0)
+                start_h, end_h, start_w, end_w = crop_black_region(min_projection)
+
             self.img = self.img[:, :, :, start_h:end_h, start_w:end_w]
+
+    def align_from_matrix(self, img: np.ndarray) -> np.ndarray:
+        """
+        Align a new image using a transformation matrix from the source image.
+        Note, the reference image should be the same as the one used to create the transformation matrix.
+
+        Args:
+            img (np.ndarray): Input image array.
+
+        Returns:
+            np.ndarray: Aligned image array.
+        """
+        # Check if the input image has the correct dimensions
+        if (
+            img.ndim != 3
+            or img.shape[0] != self.frames_size
+            or img.shape[1:] != self.img.shape[-2:]
+        ):
+            raise ValueError(
+                f"Input image must be 3D (frames, x, y) with shape ({self.frames_size}, {self.img.shape[-2]}, {self.img.shape[-1]}). "
+                f"Got shape: {img.shape}"
+            )
+
+        if self.tmats is None:
+            raise ValueError(
+                "Transformation matrix is not available. Please align the reference image first."
+            )
+
+        return self.sr.transform_stack(img, tmats=self.tmats)
+
 
     def clear_image_background(
         self,
