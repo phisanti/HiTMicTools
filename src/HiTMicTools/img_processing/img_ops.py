@@ -230,7 +230,6 @@ def measure_background_intensity(
     return bck_fl_df
 
 
-@torch.compile(backend="eager")
 def dynamic_resize_roi(image: torch.Tensor, min_size: int) -> torch.Tensor:
     """
     Resize a region of interest (ROI) to a uniform size using PyTorch.
