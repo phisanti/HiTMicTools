@@ -106,9 +106,10 @@ class ASCT_focusRestoration(BasePipeline):
         nSlices = metadata.images[0].pixels.size_z
         nChannels = metadata.images[0].pixels.size_c
         nFrames = metadata.images[0].pixels.size_t
-        img_logger.info(f"analysing image with dimensions: {nFrames}x{nChannels}x{nSlices}x{size_x}x{size_y}")
-
         # 2 Pre-process image --------------------------------------------
+        img_logger.info(f'Image shape: {img.shape}, pixel size: {pixel_size} um, Reshaped to {nFrames}x{nChannels}x{nSlices}x{size_x}x{size_y}')
+        img = img.reshape(nFrames, nChannels, size_x, size_y)
+
         ip = ImagePreprocessor(img, stack_order="TCXY")
         img = np.zeros((1, 1, 1, 1))  # Remove img to save memory
 
@@ -118,14 +119,14 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 2.3 Align frames if required
         if align_frames:
-            img_logger.info(f"2.3 - Aligning frames in the stack", show_memory=True)
+            img_logger.info(f"2.1 - Aligning frames in the stack", show_memory=True)
             ip.align_image(
                 ref_channel=0, ref_slice=0, compres_align=0.75, crop_image=True, reference="previous"
             )
-            img_logger.info(f"2.3 - Alignment completed!", show_memory=True)
+            img_logger.info(f"2.1 - Alignment completed!", show_memory=True)
         # Update size x and size y after aligment and maybe crop
         size_x, size_y = ip.img.shape[-2], ip.img.shape[-1]
-        img_logger.info("Fixing border wells")
+        img_logger.info("2.1 - Fixing border wells")
         ip.detect_fix_well(nchannels=0, nslices=0, nframes=range(nFrames))
         img_logger.info(
             f"Intensity before clear background:\n{self.check_px_values(ip, reference_channel, round=3)}"
