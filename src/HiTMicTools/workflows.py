@@ -305,7 +305,10 @@ class BasePipeline(ABC):
             config = self._load_tracker_config_from_zip(config_path)
             # Apply override arguments if provided
             if tracker_override_args:
-                config.update(tracker_override_args)
+                for k, v in tracker_override_args.items():
+                    if config.get(k) != v:
+                        self.main_logger.info(f"Tracker config override: {k}: old={config.get(k)}, new={v}")
+                    config[k] = v
             
             self.cell_tracker = CellTracker(config_dict=config)
         else:
