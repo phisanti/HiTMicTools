@@ -1,0 +1,255 @@
+import pandas as pd
+import numpy as np
+import logging
+import btrack
+from btrack.constants import BayesianUpdates
+from typing import Optional, Dict, Any, Tuple, List
+from pathlib import Path
+
+from .config_validator import TrackingConfigValidator
+from .config_loader import ConfigLoader
+from .tracking_utils import (
+    prepare_dataframe_for_tracking,
+    merge_tracking_results,
+    validate_dataframe_integrity,
+    suppress_native_stdout_stderr
+)
+
+class CellTracker:
+    """
+    Multi-object tracking module for cell tracking using btrack.
+    
+    This class provides a high-level interface for tracking cells across time frames
+    using the btrack library. It handles configuration loading, data validation,
+    and integrates seamlessly with the existing pipeline.
+    
+    Args:
+        config_path: Path to tracking configuration file or zip archive
+        features: List of feature columns to use for tracking
+        volume_bounds: Optional volume bounds (xmax, ymax)
+        tracking_updates: List of tracking update methods
+    """
+    
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        config_dict: Optional[dict] = None,
+        override_args: Optional[dict] = None,
+    ):
+
+        if config_dict is not None:
+            self.config_path = None
+            self.config = config_dict
+        elif config_path is not None:
+            self.config_path = config_path
+            self.config = self._load_config(override_args)
+        else:
+            raise ValueError("Either config_path or config_dict must be provided")
+        
+        self.tracking_updates = ["MOTION", "VISUAL"]
+        
+        # Load and validate configuration
+        self.validator = TrackingConfigValidator()
+        self._validate_configuration()
+        self.features = self._get_default_features()
+        self.volume_bounds = None
+
+    def set_features(self, features: List[str]) -> None:
+        """
+        Set the features to use for the visual model in tracking.
+        
+        Args:
+            features: List of feature columns to use for tracking
+        """
+        self.features = features
+    
+    def _get_default_features(self) -> List[str]:
+        """Get default feature set for tracking."""
+        return [
+            # "t", "y", "x", "z", These are noted for the user but are implicit in the Motion model
+            # "area", 
+            # "major_axis_length", 
+            # "minor_axis_length", 
+            # "solidity",
+            # "orientation", 
+            # "rel_mean_intensity"
+        ]
+    
+    def _load_config(self, override_args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Load tracking configuration from file or zip."""
+        return ConfigLoader.load_config(self.config_path, override_args=override_args)
+    
+    def _validate_configuration(self) -> None:
+        """Validate the loaded configuration."""
+        self.validator.validate_config_dimensions(self.config)
+    
+    def track_objects(
+        self,
+        measurements_df: pd.DataFrame,
+        volume_bounds: Optional[Tuple[int, int]] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> pd.DataFrame:
+        """
+        Perform tracking on measurements DataFrame.
+        
+        Args:
+            measurements_df: DataFrame with object measurements
+            volume_bounds: Optional override for volume bounds
+            
+        Returns:
+            DataFrame with tracking results merged
+            
+        Raises:
+            ValueError: If input data validation fails
+        """
+        # Checks > Prepare > Tracking > Merge
+        self._validate_input_data(measurements_df)
+        tracking_data = self._prepare_tracking_data(measurements_df)
+        tracks_df = self._run_tracking(tracking_data, volume_bounds, logger)
+
+        return self._merge_tracking_results(measurements_df, tracks_df)
+    
+    def _validate_input_data(self, measurements_df: pd.DataFrame) -> None:
+        """
+        Validate input DataFrame for tracking.
+        
+        Args:
+            measurements_df: DataFrame to validate
+            
+        Raises:
+            ValueError: If validation fails
+        """
+        validate_dataframe_integrity(measurements_df)
+        
+        # Check for required tracking columns
+        required_cols = ['frame', 'centroid_0', 'centroid_1']
+        missing_cols = [col for col in required_cols if col not in measurements_df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+    
+    def _prepare_tracking_data(self, measurements_df: pd.DataFrame) -> np.ndarray:
+        """
+        Prepare DataFrame for btrack tracking.
+        
+        Args:
+            measurements_df: Original measurements DataFrame
+            
+        Returns:
+            Array of objects formatted for btrack
+        """
+        # Create column mapping based on existing experiment code
+        rename_mapping = {
+            'frame': 't',
+            'centroid_0': 'y', 
+            'centroid_1': 'x',
+            'slice': 'z',
+            'label': 'original_label'
+        }
+        
+        out= prepare_dataframe_for_tracking(
+            measurements_df,
+            self.features,
+            rename_columns=rename_mapping
+        )
+        self.xmax = measurements_df['centroid_1'].max()
+        self.ymax = measurements_df['centroid_0'].max()
+        return out
+    
+    def _run_tracking(
+        self, 
+        tracking_data: np.ndarray, 
+        volume_bounds: Optional[Tuple[int, int]] = None,
+        logger: logging.Logger = None,
+    ) -> pd.DataFrame:
+        """
+        Execute btrack tracking algorithm.
+        
+        Args:
+            tracking_data: Prepared tracking data
+            volume_bounds: Optional volume bounds override
+            
+        Returns:
+            DataFrame with tracking results
+        """
+        if volume_bounds is None:
+            raise ValueError("Volume bounds must be provided for tracking")
+        # TODO: remove also the forcing of volume_bounds
+        #volume_bounds=(800, 800)
+        # xmax, ymax = volume_bounds
+        xmax = self.xmax
+        ymax = self.ymax
+
+        # Initialize and configure tracker
+        # Load the config file directly for testing
+        if logger is not None:
+            self._configure_btrack_logging(logger)
+        with btrack.BayesianTracker(verbose=False) as tracker:
+            # Configure tracker with loaded config
+            tracker.configure(self.config)
+            # Set tracking parameters
+            tracker.tracking_updates = self.tracking_updates
+            tracker.update_method = BayesianUpdates.APPROXIMATE
+            tracker.max_search_radius=7
+            print(f'Tracker max_radius_search: {tracker.max_search_radius}')
+            print(f'This are the tracking updates: {tracker.tracking_updates}')
+            print(f'Tracking in volume bounds: {xmax}, {ymax}')
+            # Append objects and set volume
+            tracker.append(tracking_data)
+            tracker.volume = ((0, xmax), (0, ymax))#, (10e-6, 10e-6))
+            print(f'Tracker max_radius_search: {tracker.max_search_radius}')
+            # Run tracking
+            tracker.track(step_size=10000)
+            tracker.optimize()
+            
+            # Get results in napari format for merging
+            data, properties, graph = tracker.to_napari()
+        
+        # Convert to DataFrame
+        return pd.DataFrame(data, columns=['trackid', 't', 'y', 'x'])
+    
+    def _merge_tracking_results(
+        self, 
+        measurements_df: pd.DataFrame, 
+        tracks_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Merge tracking results with original measurements.
+        
+        Args:
+            measurements_df: Original measurements
+            tracks_df: Tracking results
+            
+        Returns:
+            Merged DataFrame
+        """
+        # Convert back to original column names for merging
+        merge_df = tracks_df.rename(columns={
+            't': 'frame',
+            'y': 'centroid_0', 
+            'x': 'centroid_1'
+        })
+        
+        return merge_tracking_results(
+            measurements_df,
+            merge_df[['trackid', 'frame', 'centroid_0', 'centroid_1']], 
+            merge_on=['frame', 'centroid_0', 'centroid_1']
+        )
+    
+    def _configure_btrack_logging(self, target_logger: logging.Logger) -> None:
+        """Configure all btrack-related loggers to use our target logger."""
+        # Get all potential btrack loggers. This is necessary in order to avoid the
+        # btrack loggers from writing over the image analysis loggers.
+        btrack_loggers = [
+            logging.getLogger("btrack"),
+            logging.getLogger("btrack.core"),
+            logging.getLogger("btrack.utils"),
+        ]
+        
+        for btrack_logger in btrack_loggers:
+            # Clear existing handlers
+            btrack_logger.handlers.clear()
+            # Add our target logger's handlers
+            for handler in target_logger.handlers:
+                btrack_logger.addHandler(handler)
+            btrack_logger.setLevel(target_logger.level)
+            btrack_logger.propagate = False

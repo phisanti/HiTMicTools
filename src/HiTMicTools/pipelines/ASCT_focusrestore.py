@@ -8,7 +8,11 @@ import numpy as np
 
 # Local imports
 from HiTMicTools.resource_management.memlogger import MemoryLogger
-from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device, wait_for_memory
+from HiTMicTools.resource_management.sysutils import (
+    empty_gpu_cache,
+    get_device,
+    wait_for_memory,
+)
 from HiTMicTools.workflows import BasePipeline
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.img_processing.array_ops import convert_image
@@ -17,6 +21,7 @@ from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels
 from HiTMicTools.utils import get_timestamps, remove_file_extension
 from HiTMicTools.roi_analyser import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
+from HiTMicTools.tracking.cell_tracker import CellTracker
 
 # TODO: Currently, I can use the cupy based ROI analyser, but performance is lagging.
 # I will start working with the CPU-based ROI analyser and slowly move to the GPU-based.
@@ -37,6 +42,8 @@ from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 
 from jetraw_tools.image_reader import ImageReader
 import psutil
+import time
+import random
 
 
 class ASCT_focusRestoration(BasePipeline):
@@ -74,15 +81,20 @@ class ASCT_focusRestoration(BasePipeline):
         """Pipeline analysis for each image."""
 
         # 1. Read Image:
-        device=get_device()
+        device = get_device()
         is_cuda = device == torch.device("cuda")
         movie_name = remove_file_extension(name)
         name = movie_name
+        # Desync analysis to avoid RAM/VRAM issues
+        sleep_time = random.uniform(0, 10)
         img_logger = self.setup_logger(self.output_path, movie_name)
         img_logger.info(f"Start analysis for {movie_name}")
+        img_logger.info(f"Desyncing analysis for {sleep_time:.2f} seconds")
+        time.sleep(sleep_time)
         reference_channel = self.reference_channel
         pi_channel = self.pi_channel
         align_frames = self.align_frames
+        tracking = self.tracking
         method = self.method
 
         img_logger.info(f"1 - Reading image, Memory", show_memory=True)
@@ -94,9 +106,7 @@ class ASCT_focusRestoration(BasePipeline):
         nSlices = metadata.images[0].pixels.size_z
         nChannels = metadata.images[0].pixels.size_c
         nFrames = metadata.images[0].pixels.size_t
-
-        img = img.reshape(nFrames, nChannels, size_x, size_y)
-        nFrames = img.shape[0]
+        img_logger.info(f"analysing image with dimensions: {nFrames}x{nChannels}x{nSlices}x{size_x}x{size_y}")
 
         # 2 Pre-process image --------------------------------------------
         ip = ImagePreprocessor(img, stack_order="TCXY")
@@ -105,6 +115,18 @@ class ASCT_focusRestoration(BasePipeline):
         # 2.1 Remove background
         img_logger.info(f"2.1 - Preprocessing image.", show_memory=True)
         img_logger.info(f"Image shape {ip.img.shape}")
+
+        # 2.3 Align frames if required
+        if align_frames:
+            img_logger.info(f"2.3 - Aligning frames in the stack", show_memory=True)
+            ip.align_image(
+                ref_channel=0, ref_slice=0, compres_align=0.75, crop_image=True, reference="previous"
+            )
+            img_logger.info(f"2.3 - Alignment completed!", show_memory=True)
+        # Update size x and size y after aligment and maybe crop
+        size_x, size_y = ip.img.shape[-2], ip.img.shape[-1]
+        img_logger.info("Fixing border wells")
+        ip.detect_fix_well(nchannels=0, nslices=0, nframes=range(nFrames))
         img_logger.info(
             f"Intensity before clear background:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
@@ -127,7 +149,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Intensity (BF) before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
-        wait_for_memory(required_gb=6, device=device)
+        wait_for_memory(required_gb=6, device=device, logger=img_logger)
         ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
             ip.img[:, 0, reference_channel],
             rescale=False,
@@ -140,7 +162,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Intensity (PI) before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
-        wait_for_memory(required_gb=6, device=device)
+        wait_for_memory(required_gb=6, device=device, logger=img_logger)
         ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
             ip.img[:, 0, pi_channel],
             batch_size=1,
@@ -156,19 +178,11 @@ class ASCT_focusRestoration(BasePipeline):
             f"Intensity (PI) after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
 
-        # 2.3 Align frames if required
-        if align_frames:
-            img_logger.info(f"2.3 - Aligning frames in the stack", show_memory=True)
-            ip.align_image(
-                0, 0, compres_align=0.5, crop_image=False, reference="previous"
-            )
-            img_logger.info(f"2.3 - Alignment completed!", show_memory=True)
-
         # 2.4 Remove orignal image (not used after background corr) to save mem
         ip.img_original = np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment Image --------------------------------------------
-        wait_for_memory(required_gb=6, device=device)
+        wait_for_memory(required_gb=6, device=device, logger=img_logger)
         img_logger.info(f"3.1 Image Segmentation", show_memory=True, cuda=is_cuda)
         prob_map = self.image_segmentator.predict(
             ip.img[:, 0, reference_channel, :, :],
@@ -204,8 +218,8 @@ class ASCT_focusRestoration(BasePipeline):
         # 3.3 Classify ROIs
         img_logger.info(f"3.2 - Classify ROIs", show_memory=True, cuda=is_cuda)
         # object_classes, labels=self.object_classifier.classify_rois(img_analyser.labeled_mask[:, 0,0], img_analyser.img[:, 0,0])
-        wait_for_memory(required_gb=8, device=device)
-        object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=5)
+        wait_for_memory(required_gb=7, device=device, logger=img_logger)
+        object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=4)
         img_logger.info(f"3.2 GPU  Memory", show_memory=True, cuda=is_cuda)
 
         # 4.1 Calc. measurements --------------------------------------------
@@ -222,6 +236,11 @@ class ASCT_focusRestoration(BasePipeline):
             "min_intensity",
             "mean_intensity",
             "area",
+            "major_axis_length", 
+            "minor_axis_length", 
+            "solidity",
+            "orientation", 
+
         ]
         img_logger.info("4.2 - Extracting fluorescent measurements")
         fl_measurements = img_analyser.get_roi_measurements(
@@ -240,6 +259,23 @@ class ASCT_focusRestoration(BasePipeline):
         ] = fl_measurements[["max_intensity", "min_intensity", "mean_intensity"]].div(
             fl_measurements["background"], axis=0
         )
+        
+        # 4.4 Object tracking (if enabled)
+        if self.tracking and self.cell_tracker is not None:
+            img_logger.info("4.4 - Running object tracking")
+            track_features=fl_prop[5:10]
+            self.cell_tracker.set_features(track_features)
+            try:
+                fl_measurements = self.cell_tracker.track_objects(
+                    fl_measurements,
+                    volume_bounds=(size_x, size_y),
+                    logger=img_logger
+                )
+                img_logger.info("4.4 - Object tracking completed successfully")
+            except Exception as e:
+                img_logger.error(f"Object tracking failed: {e}")
+                # Continue without tracking
+        
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
         img_logger.info(f"4 - Measurements completed", show_memory=True)

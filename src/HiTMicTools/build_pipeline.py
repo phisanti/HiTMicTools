@@ -1,5 +1,7 @@
 import os
 import sys
+
+# Load local modules
 from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
@@ -65,6 +67,25 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
         ]:
             if model_key in configs:
                 analysis_wf.load_model_fromdict(model_key, configs[model_key])
+
+    # Load tracker if tracking is enabled and config is provided
+    if configs.pipeline_setup.get("tracking", False):
+        tracking_config = configs.get("tracking", {})
+        tracker_override_args = tracking_config.get("parameters_override", None)
+        
+        config_path = tracking_config.get("config_path")
+        
+        if model_bundle:
+            analysis_wf.load_tracker(model_bundle, tracker_override_args=tracker_override_args)
+            print(f"Tracking enabled with config from bundle: {model_bundle}")
+        elif config_path:
+            analysis_wf.load_tracker(config_path, tracker_override_args=tracker_override_args)
+            print(f"Tracking enabled with config: {config_path}")
+        else:
+            print("Warning: Tracking enabled but no config source provided")
+            sys.exit(1)
+    else:
+        print("Tracking disabled")
 
     if configs.pipeline_setup["parallel_processing"]:
         analysis_wf.process_folder_parallel(
