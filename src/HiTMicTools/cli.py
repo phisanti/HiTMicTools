@@ -51,6 +51,19 @@ def add_split_files_command(subparsers):
         default=None,
         help="File extension to filter by (optional)",
     )
+    parser.add_argument(
+        "--return-full-path",
+        action="store_true",
+        default=True,
+        help="If set, write full file paths to block files (default: True)",
+    )
+    parser.add_argument(
+        "--no-return-full-path",
+        dest="return_full_path",
+        action="store_false",
+        help="If set, write only file names to block files",
+    )
+    parser.set_defaults(return_full_path=True)
     parser.set_defaults(func=run_split_files)
 
 
@@ -64,6 +77,7 @@ def run_split_files(args):
         args.output_dir,
         args.file_pattern,
         args.file_extension,
+        args.return_full_path,
     )
 
 

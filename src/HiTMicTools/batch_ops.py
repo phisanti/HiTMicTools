@@ -10,6 +10,7 @@ def split_files_into_blocks(
     output_dir: str = "./temp",
     file_pattern: Optional[str] = None,
     file_extension: Optional[str] = None,
+    return_full_path: bool = True,  # New flag
 ) -> List[str]:
     """
     Split files in a target folder into multiple block files for parallel processing.
@@ -20,6 +21,7 @@ def split_files_into_blocks(
         output_dir (str, optional): Directory to save the block files. Defaults to "./temp".
         file_pattern (str, optional): Pattern to filter files. Defaults to None.
         file_extension (str, optional): File extension to filter by. Defaults to None.
+        return_full_path (bool, optional): If True, write full file paths to block files. Defaults to True.
 
     Returns:
         List[str]: List of paths to the created block files
@@ -55,7 +57,11 @@ def split_files_into_blocks(
         block_path = os.path.join(output_dir, f"file_block_{i}.txt")
         with open(block_path, "w") as f:
             for file_name in files[start_idx:end_idx]:
-                f.write(f"{file_name}\n")
+                if return_full_path:
+                    file_entry = os.path.abspath(os.path.join(target_folder, file_name))
+                else:
+                    file_entry = file_name
+                f.write(f"{file_entry}\n")
 
         block_files.append(block_path)
 
