@@ -1,8 +1,9 @@
 import os
 import sys
-from contextlib import contextmanager
+import logging
 import pandas as pd
 import numpy as np
+from contextlib import contextmanager
 from typing import List, Dict, Optional
 
 def prepare_dataframe_for_tracking(
@@ -90,24 +91,72 @@ def validate_dataframe_integrity(df: pd.DataFrame) -> None:
         raise ValueError("Frame numbers cannot be negative")
 
 @contextmanager
-def suppress_native_stdout_stderr():
-    """Suppress output from native libraries (C/C++)."""
+def suppress_native_stdout_stderr(mode: str = 'suppress', logger: Optional[logging.Logger] = None):
+    """Suppress or capture output from native libraries (C/C++).
+    
+    Args:
+        mode: 'suppress' to discard output, 'capture' to send to logger
+        logger: Logger instance to use when mode='capture'
+    """
+    if mode == 'capture' and logger is None:
+        raise ValueError("Logger must be provided when mode='capture'")
+    
     # Save original file descriptors
     original_stdout_fd = sys.stdout.fileno()
     original_stderr_fd = sys.stderr.fileno()
-
-    # Open null files
-    devnull = os.open(os.devnull, os.O_WRONLY)
     saved_stdout = os.dup(original_stdout_fd)
     saved_stderr = os.dup(original_stderr_fd)
-
-    try:
-        os.dup2(devnull, original_stdout_fd)
-        os.dup2(devnull, original_stderr_fd)
-        yield
-    finally:
-        os.dup2(saved_stdout, original_stdout_fd)
-        os.dup2(saved_stderr, original_stderr_fd)
-        os.close(saved_stdout)
-        os.close(saved_stderr)
-        os.close(devnull)
+    
+    if mode == 'suppress':
+        # Original suppression behavior
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, original_stdout_fd)
+            os.dup2(devnull, original_stderr_fd)
+            yield
+        finally:
+            os.dup2(saved_stdout, original_stdout_fd)
+            os.dup2(saved_stderr, original_stderr_fd)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            os.close(devnull)
+    
+    elif mode == 'capture' and logger is not None:
+        # Capture output and send to logger
+        import tempfile
+        
+        # Create temporary files for capturing
+        stdout_temp = tempfile.NamedTemporaryFile(mode='w+', delete=False)
+        stderr_temp = tempfile.NamedTemporaryFile(mode='w+', delete=False)
+        
+        try:
+            os.dup2(stdout_temp.fileno(), original_stdout_fd)
+            os.dup2(stderr_temp.fileno(), original_stderr_fd)
+            yield
+        finally:
+            # Restore original file descriptors
+            os.dup2(saved_stdout, original_stdout_fd)
+            os.dup2(saved_stderr, original_stderr_fd)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            
+            # Read captured output and log it
+            stdout_temp.seek(0)
+            stderr_temp.seek(0)
+            
+            stdout_content = stdout_temp.read()
+            stderr_content = stderr_temp.read()
+            
+            if stdout_content.strip():
+                logger.info(f"Native stdout: {stdout_content.strip()}")
+            if stderr_content.strip():
+                logger.warning(f"Native stderr: {stderr_content.strip()}")
+            
+            # Clean up temporary files
+            stdout_temp.close()
+            stderr_temp.close()
+            os.unlink(stdout_temp.name)
+            os.unlink(stderr_temp.name)
+    
+    else:
+        raise ValueError(f"Invalid mode: {mode}. Use 'suppress' or 'capture'. If using capture, provide a logger. Logger is {logger}.")
