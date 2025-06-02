@@ -97,7 +97,7 @@ class ASCT_focusRestoration(BasePipeline):
         tracking = self.tracking
         method = self.method
 
-        img_logger.info(f"1 - Reading image, Memory", show_memory=True)
+        img_logger.info("1 - Reading image", show_memory=True)
         image_reader = ImageReader(file_i, self.file_type)
         img, metadata = image_reader.read_image()
         pixel_size = metadata.images[0].pixels.physical_size_x
@@ -107,29 +107,31 @@ class ASCT_focusRestoration(BasePipeline):
         nChannels = metadata.images[0].pixels.size_c
         nFrames = metadata.images[0].pixels.size_t
         # 2 Pre-process image --------------------------------------------
-        img_logger.info(f'Image shape: {img.shape}, pixel size: {pixel_size} um, Reshaped to {nFrames}x{nChannels}x{nSlices}x{size_x}x{size_y}')
+        img_logger.info(
+            f"Image shape: {img.shape}, pixel size: {pixel_size} µm. Reshaped to (frames={nFrames}, channels={nChannels}, slices={nSlices}, x={size_x}, y={size_y})"
+        )
         img = img.reshape(nFrames, nChannels, size_x, size_y)
 
         ip = ImagePreprocessor(img, stack_order="TCXY")
         img = np.zeros((1, 1, 1, 1))  # Remove img to save memory
 
         # 2.1 Remove background
-        img_logger.info(f"2.1 - Preprocessing image.", show_memory=True)
-        img_logger.info(f"Image shape {ip.img.shape}")
+        img_logger.info("2.1 - Preprocessing image", show_memory=True)
+        img_logger.info(f"Preprocessed image shape: {ip.img.shape}")
 
         # 2.3 Align frames if required
         if align_frames:
-            img_logger.info(f"2.1 - Aligning frames in the stack", show_memory=True)
+            img_logger.info("2.1 - Aligning frames in the stack", show_memory=True)
             ip.align_image(
                 ref_channel=0, ref_slice=0, compres_align=0.75, crop_image=True, reference="previous"
             )
-            img_logger.info(f"2.1 - Alignment completed!", show_memory=True)
-        # Update size x and size y after aligment and maybe crop
+            img_logger.info("2.1 - Frame alignment completed", show_memory=True)
+        # Update size x and size y after alignment and maybe crop
         size_x, size_y = ip.img.shape[-2], ip.img.shape[-1]
-        img_logger.info("2.1 - Fixing border wells")
+        img_logger.info("2.1 - Detecting and fixing border wells")
         ip.detect_fix_well(nchannels=0, nslices=0, nframes=range(nFrames))
         img_logger.info(
-            f"Intensity before clear background:\n{self.check_px_values(ip, reference_channel, round=3)}"
+            f"Reference channel intensity before background removal:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
 
         self.clear_background(
@@ -145,10 +147,10 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 2.2 Focus restoration in the reference channel
         img_logger.info(
-            f"2.2 - Focus restoration in the reference channel", show_memory=True
+            "2.2 - Restoring focus in the reference channel", show_memory=True
         )
         img_logger.info(
-            f"Intensity (BF) before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
+            f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
         wait_for_memory(required_gb=6, device=device, logger=img_logger)
         ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
@@ -159,9 +161,9 @@ class ASCT_focusRestoration(BasePipeline):
             buffer_dim=-1,
             sw_batch_size=1,
         )
-        img_logger.info(f"2.2 - Focus restoration in the PI channel", show_memory=True)
+        img_logger.info("2.2 - Restoring focus in the PI channel", show_memory=True)
         img_logger.info(
-            f"Intensity (PI) before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
         wait_for_memory(required_gb=6, device=device, logger=img_logger)
         ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
@@ -173,18 +175,18 @@ class ASCT_focusRestoration(BasePipeline):
             padding_mode="reflect",
         )
         img_logger.info(
-            f"Intensity (BF) after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
+            f"Reference channel intensity after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
         img_logger.info(
-            f"Intensity (PI) after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            f"PI channel intensity after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
 
-        # 2.4 Remove orignal image (not used after background corr) to save mem
+        # 2.4 Remove original image (not used after background corr) to save mem
         ip.img_original = np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment Image --------------------------------------------
         wait_for_memory(required_gb=6, device=device, logger=img_logger)
-        img_logger.info(f"3.1 Image Segmentation", show_memory=True, cuda=is_cuda)
+        img_logger.info("3.1 - Image segmentation", show_memory=True, cuda=is_cuda)
         prob_map = self.image_segmentator.predict(
             ip.img[:, 0, reference_channel, :, :],
             buffer_steps=4,
@@ -192,7 +194,7 @@ class ASCT_focusRestoration(BasePipeline):
             sw_batch_size=1,
         )
         img_logger.info(
-            f"3.1 - Segmentation completed!", show_memory=True, cuda=is_cuda
+            "3.1 - Segmentation completed", show_memory=True, cuda=is_cuda
         )
 
         # Get ROIs
@@ -206,7 +208,7 @@ class ASCT_focusRestoration(BasePipeline):
             pass
 
         # 3.2 Get ROIs
-        img_logger.info(f"3.2 - Extracting ROIs", show_memory=True)
+        img_logger.info("3.2 - Extracting ROIs", show_memory=True)
         img_analyser = RoiAnalyser(ip.img, prob_map, stack_order=("TSCXY", "TCXY"))
 
         # Remove image-processor to release space
@@ -214,17 +216,16 @@ class ASCT_focusRestoration(BasePipeline):
         img_analyser.create_binary_mask()
         img_analyser.clean_binmask(min_pixel_size=20)
         img_analyser.get_labels()
-        img_logger.info(f"{img_analyser.total_rois} objects found")
+        img_logger.info(f"{img_analyser.total_rois} objects found in segmentation")
 
         # 3.3 Classify ROIs
-        img_logger.info(f"3.2 - Classify ROIs", show_memory=True, cuda=is_cuda)
-        # object_classes, labels=self.object_classifier.classify_rois(img_analyser.labeled_mask[:, 0,0], img_analyser.img[:, 0,0])
+        img_logger.info("3.2 - Classifying ROIs", show_memory=True, cuda=is_cuda)
         wait_for_memory(required_gb=7, device=device, logger=img_logger)
         object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=4)
-        img_logger.info(f"3.2 GPU  Memory", show_memory=True, cuda=is_cuda)
+        img_logger.info("3.2 - GPU memory status after classification", show_memory=True, cuda=is_cuda)
 
         # 4.1 Calc. measurements --------------------------------------------
-        img_logger.info(f"4 - Starting measurements", show_memory=True)
+        img_logger.info("4 - Starting measurements", show_memory=True)
         img_logger.info("4.1 - Extracting background fluorescence intensity")
         bck_fl = measure_background_intensity(
             img_analyser.img, img_analyser.labeled_mask, target_channel=1
@@ -241,9 +242,8 @@ class ASCT_focusRestoration(BasePipeline):
             "minor_axis_length", 
             "solidity",
             "orientation", 
-
         ]
-        img_logger.info("4.2 - Extracting fluorescent measurements")
+        img_logger.info("4.2 - Extracting fluorescence measurements")
         fl_measurements = img_analyser.get_roi_measurements(
             target_channel=1,
             properties=fl_prop,
@@ -251,7 +251,7 @@ class ASCT_focusRestoration(BasePipeline):
         )
         fl_measurements["object_class"] = object_classes
 
-        img_logger.info("4.3 - Extracting time data")
+        img_logger.info("4.3 - Extracting time metadata")
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
         fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
         fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
@@ -279,11 +279,11 @@ class ASCT_focusRestoration(BasePipeline):
         
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
-        img_logger.info(f"4 - Measurements completed", show_memory=True)
+        img_logger.info("4 - Measurements completed", show_memory=True)
 
         # 4.1 PI classification
         if self.pi_classifier is not None:
-            img_logger.info(f"4.4 - Running PI classification", show_memory=True)
+            img_logger.info("4.4 - Running PI classification", show_memory=True)
             predictions = self.pi_classifier.predict(
                 fl_measurements[self.pi_classifier.feature_names_in_]
             )
@@ -309,7 +309,7 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 5. Export data --------------------------------------------
         export_path = os.path.join(self.output_path, name)
-        img_logger.info(f"5 - Writing data to {export_path}")
+        img_logger.info(f"5 - Writing output data to {export_path}")
 
         fl_measurements.to_csv(export_path + "_fl.csv")
         d_summary.to_csv(export_path + "_summary.csv")
@@ -374,7 +374,7 @@ class ASCT_focusRestoration(BasePipeline):
         del prob_map, img, fl_measurements, d_summary, img_analyser
         gc.collect()
         empty_gpu_cache(device)
-        img_logger.info(f"Garbage collection completed", show_memory=True)
+        img_logger.info("Garbage collection completed", show_memory=True)
 
         self.remove_logger(img_logger)
 
@@ -530,7 +530,7 @@ class ASCT_focusRestoration(BasePipeline):
             )
             d_summary = pd.DataFrame()
 
-        img_logger.info(f"d_summary created successfully.", show_memory=True)
+        img_logger.info("d_summary created successfully", show_memory=True)
 
         return d_summary
 
