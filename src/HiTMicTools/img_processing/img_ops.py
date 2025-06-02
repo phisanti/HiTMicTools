@@ -255,6 +255,8 @@ def dynamic_resize_roi(image: torch.Tensor, min_size: int) -> torch.Tensor:
         # Calculate scaling to maintain aspect ratio (only downscale, never upscale)
         scale = min_size / max(h, w)
         new_h, new_w = int(h * scale), int(w * scale)
+        new_h = max(1, new_h)
+        new_w = max(1, new_w)
 
         # Add batch and channel dimensions for interpolation
         image = image.unsqueeze(0).unsqueeze(0)  # [H,W] -> [1,1,H,W]
