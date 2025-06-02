@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import logging
 import btrack
+
 from btrack.constants import BayesianUpdates
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
@@ -183,26 +184,27 @@ class CellTracker:
         # Load the config file directly for testing
         if logger is not None:
             self._configure_btrack_logging(logger)
-        with btrack.BayesianTracker(verbose=False) as tracker:
-            # Configure tracker with loaded config
-            tracker.configure(self.config)
-            # Set tracking parameters
-            tracker.tracking_updates = self.tracking_updates
-            tracker.update_method = BayesianUpdates.APPROXIMATE
-            tracker.max_search_radius=7
-            print(f'Tracker max_radius_search: {tracker.max_search_radius}')
-            print(f'This are the tracking updates: {tracker.tracking_updates}')
-            print(f'Tracking in volume bounds: {xmax}, {ymax}')
-            # Append objects and set volume
-            tracker.append(tracking_data)
-            tracker.volume = ((0, xmax), (0, ymax))#, (10e-6, 10e-6))
-            print(f'Tracker max_radius_search: {tracker.max_search_radius}')
-            # Run tracking
-            tracker.track(step_size=10000)
-            tracker.optimize()
-            
-            # Get results in napari format for merging
-            data, properties, graph = tracker.to_napari()
+        with suppress_native_stdout_stderr(mode='capture', logger=logger):
+            with btrack.BayesianTracker(verbose=False) as tracker:
+                # Configure tracker with loaded config
+                tracker.configure(self.config)
+                # Set tracking parameters
+                tracker.tracking_updates = self.tracking_updates
+                tracker.update_method = BayesianUpdates.APPROXIMATE
+                tracker.max_search_radius=7
+                print(f'Tracker max_radius_search: {tracker.max_search_radius}')
+                print(f'This are the tracking updates: {tracker.tracking_updates}')
+                print(f'Tracking in volume bounds: {xmax}, {ymax}')
+                # Append objects and set volume
+                tracker.append(tracking_data)
+                tracker.volume = ((0, xmax), (0, ymax))#, (10e-6, 10e-6))
+                print(f'Tracker max_radius_search: {tracker.max_search_radius}')
+                # Run tracking
+                tracker.track(step_size=10000)
+                tracker.optimize()
+                
+                # Get results in napari format for merging
+                data, properties, graph = tracker.to_napari()
         
         # Convert to DataFrame
         return pd.DataFrame(data, columns=['trackid', 't', 'y', 'x'])

@@ -28,11 +28,11 @@ from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
 from HiTMicTools.tracking.cell_tracker import CellTracker
 from HiTMicTools.resource_management.sysutils import get_device, get_system_info
-from HiTMicTools.utils import read_metadata
 from HiTMicTools.model_arch.nafnet import NAFNet
 from HiTMicTools.model_arch.flexresnet import FlexResNet
 from HiTMicTools.model_components.pi_classifier import PIClassifier
 from monai.networks.nets import UNet as monai_unet
+from HiTMicTools.utils import read_metadata, update_config
 
 
 @contextmanager
@@ -305,10 +305,7 @@ class BasePipeline(ABC):
             config = self._load_tracker_config_from_zip(config_path)
             # Apply override arguments if provided
             if tracker_override_args:
-                for k, v in tracker_override_args.items():
-                    if config.get(k) != v:
-                        self.main_logger.info(f"Tracker config override: {k}: old={config.get(k)}, new={v}")
-                    config[k] = v
+                config = update_config(config, tracker_override_args, logger=self.main_logger)
             
             self.cell_tracker = CellTracker(config_dict=config)
         else:
