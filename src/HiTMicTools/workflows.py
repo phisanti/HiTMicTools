@@ -86,12 +86,12 @@ class BasePipeline(ABC):
         if worklist_path:
             worklist_id = os.path.basename(worklist_path).split(".")[0]
 
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
         self.main_logger = self.setup_logger(
             output_path, last_folder, logger_id=worklist_id, print_output=True
         )
-
-        if not os.path.exists(output_path):
-            os.makedirs(output_path)
 
         self.output_path = output_path
         self.file_type = file_type
