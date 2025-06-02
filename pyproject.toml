@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hitmictools"
-version = "0.3.6"
+version = "0.3.7"
 description = "Tools for high-throughput microscopy image analysis"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -33,7 +33,7 @@ dependencies = [
     "tifffile",
     "monai",
     "pystackreg",
-    "psutil",
+    "psutil",   
     "nd2",
     "opencv-python",
     "ome-types",
