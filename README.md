@@ -86,7 +86,7 @@ The package provides a CLI for common operations so that the image analysis can 
 hitmictools --help
 
 # Run image analysis with a configuration file
-hitmictools analyse --config <config_file> --worklist <worklist_file> # This second argument is optional
+hitmictools run --config <config_file> --worklist <worklist_file> # This second argument is optional
 ```
 
 Also, the package provides a command to split a folder of images into smaller batches. This can be useful for processing large datasets in smaller chunks.
