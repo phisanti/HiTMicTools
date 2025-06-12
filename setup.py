@@ -32,7 +32,6 @@ setup(
         "jaxlib==0.4.23",
         "basicpy @ git+https://github.com/yuliu96/BaSiCPy.git",
         "jetraw-tools @ git+https://github.com/phisanti/jetraw_tools.git",
-        "btrack @ git+https://github.com/quantumjot/btrack.git",
         "onnxruntime",
         "skl2onnx",
     ],

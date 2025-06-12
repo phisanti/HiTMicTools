@@ -74,7 +74,35 @@ git clone https://github.com/phisanti/HiTMicTools
 cd HiTMicTools
 pip install -e .
 ```
+If you plan to use the tracking functionalities within HiTMicTools, you will need to install `btrack`. Due to potential dependency conflicts with `ome-types` when installing `btrack` via `pip install btrack`, and issues with C++ library compilation when installing directly from git using `pip install git+btrack/btrack at main · quantumjot/btrack`, we recommend manual compilation and installation of `btrack` for full functionality.
 
+1.  **Clone the btrack repository:**
+    ```bash
+    git clone https://github.com/quantumjot/btrack.git
+    ```
+2.  **Navigate to the btrack directory:**
+    ```bash
+    cd btrack
+    ```
+3.  **Compile btrack:**
+    `btrack` includes a `build.sh` script to simplify the compilation process.
+    ```bash
+    bash build.sh
+    ```
+4.  **Install btrack:**
+    After successful compilation, install the package.
+    ```bash
+    pip install .
+    ```
+5.  **Clean up (optional):**
+    You can optionally clean up the build artifacts.
+    ```bash
+    python setup.py clean --all
+    ```
+    Navigate back to your previous directory if needed:
+    ```bash
+    cd ..
+    ```
 ## 📖 Usage
 
 ### Command Line Interface
