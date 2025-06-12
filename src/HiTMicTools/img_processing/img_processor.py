@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
-from typing import Union, List, Optional, Dict
-from pystackreg import StackReg
+from typing import Union, List, Optional, Dict, Tuple
+from templatematchingpy import StackAligner, AlignmentConfig
 from basicpy import BaSiC
 from .img_ops import (
     clear_background,
@@ -61,74 +61,75 @@ class ImagePreprocessor:
         compres_align: float = 0,
         normalise_image: bool = True,
         crop_image: bool = True,
-        **kwargs,
+        alignment_config: Optional[Dict] = None,
+        bbox: Optional[Tuple[int, int, int, int]] = None,
+        reference_type: str = "static",
     ) -> None:
         """
-        Align the image using a reference channel.
+        Align the image using a reference channel with StackAligner.
 
         Args:
             ref_channel (int): Reference channel index.
             ref_slice (int): Reference slice index.
-            compres_align (float, default=0): Compression ratio to crop image for alignment. Speed up
-            alignment for very large images and long stacks.
+            compres_align (float, default=0): Compression ratio to crop image for alignment.
+            normalise_image (bool, default=True): Whether to normalize the image.
             crop_image (bool, default=True): Whether to crop the black region after alignment.
-            **kwargs: Additional keyword arguments for StackReg.
+            align_all_channels (bool, default=False): Whether to align all channels with the translation matrix from the reference channel.
+            alignment_config (Optional[Dict], default=None): Configuration for StackAligner.
+            bbox (Optional[Tuple[int, int, int, int]], default=None): Bounding box for template matching.
+            reference_type (str, default="static"): 'static' or 'dynamic' reference type.
 
         Returns:
             None
         """
         # check that compress_align is between 0-1
-        assert compres_align >= 0 and compres_align <= 1, (
-            "compress_align must be between 0 and 1"
-        )
+        assert 0 <= compres_align <= 1, "compress_align must be between 0 and 1"
 
         # Align with reference channel
         reference_channel = self.img[:, ref_slice, ref_channel, :, :]
-        
+
         if normalise_image:
-            reference_channel = reference_channel / np.mean(reference_channel, axis=(1, 2), keepdims=True)
+            reference_channel = reference_channel / np.mean(
+                reference_channel, axis=(1, 2), keepdims=True
+            )
 
-        if compres_align > 0:
-            b, h, w = reference_channel.shape
-            h_start = int(h * compres_align / 2)
-            w_start = int(w * compres_align / 2)
-            h_end = h - h_start
-            w_end = w - w_start
-            reference_channel = reference_channel[:, h_start:h_end, w_start:w_end]
+        # Define the bounding box if not provided
+        if bbox is None:
+            height, width = reference_channel.shape[1], reference_channel.shape[2]
+            box_width = width // 2
+            box_height = height // 2
+            x = (width - box_width) // 2
+            y = (height - box_height) // 2
+            bbox = (x, y, box_width, box_height)
 
-        self.sr = StackReg(StackReg.TRANSLATION)
-        self.tmats = self.sr.register_stack(reference_channel, **kwargs)
+        # Set up the alignment configuration
+        config = AlignmentConfig(**(alignment_config or {}))
+        self.aligner = StackAligner(config=config)
 
-        # Apply transform to other channels/slices
-        index_table = stack_indexer(0, range(self.slices_size), range(self.channels_size))
-
-        for _t, s, c in index_table:
+        # Register the stack
+        # Note that reference_channel is not stored as it might be scaled to mean
+        ref_aligned = self.aligner.register_stack(
+            reference_channel, bbox=bbox, reference_slice=ref_slice, reference_type=reference_type
+        )
+        self.tmats = self.aligner.translation_matrices
+        
+        # Apply the transformation to the entire image stack (all channels and slices)
+        index_table = stack_indexer(range(self.frames_size), range(self.slices_size), range(self.channels_size))
+        index_table_sc = [(s, c) for t, s, c in index_table]
+        index_table_sc = set(index_table_sc)
+        for s, c in index_table_sc:            
             img_stack = self.img[:, s, c, :, :]
-            registered_stack = self.sr.transform_stack(img_stack, tmats=self.tmats)
-            self.img[:, s, c, :, :] = registered_stack
+            reg_stack = self.aligner.transform_stack(img_stack)
+            self.img[:, s, c, :, :] = reg_stack
 
         if crop_image:
-            # If compressed, resize to the original size
-            if compres_align > 0:
-                reg_stack = self.img[:, ref_channel, ref_slice]
-                original_h, original_w = self.img.shape[-2:]
-                min_projection_compressed = np.min(reg_stack, axis=0)
-                min_projection = cv2.resize(
-                    min_projection_compressed, 
-                    (original_w, original_h), 
-                    interpolation=cv2.INTER_LINEAR
-                )
-                start_h, end_h, start_w, end_w = crop_black_region(min_projection)
-            else:
-                min_projection = np.min(reference_channel, axis=0)
-                start_h, end_h, start_w, end_w = crop_black_region(min_projection)
-
+            min_projection = np.min(ref_aligned, axis=0)
+            start_h, end_h, start_w, end_w = crop_black_region(min_projection)
             self.img = self.img[:, :, :, start_h:end_h, start_w:end_w]
 
     def align_from_matrix(self, img: np.ndarray) -> np.ndarray:
         """
-        Align a new image using a transformation matrix from the source image.
-        Note, the reference image should be the same as the one used to create the transformation matrix.
+        Align a new image using a transformation matrix from the source image, using StackAligner.
 
         Args:
             img (np.ndarray): Input image array.
@@ -147,13 +148,13 @@ class ImagePreprocessor:
                 f"Got shape: {img.shape}"
             )
 
-        if self.tmats is None:
+        if self.aligner is None or not self.aligner.is_registered:
             raise ValueError(
-                "Transformation matrix is not available. Please align the reference image first."
+                "StackAligner has not been initialized or registration has not been performed. "
+                "Please align the reference image first using align_image."
             )
 
-        return self.sr.transform_stack(img, tmats=self.tmats)
-
+        return self.aligner.transform_stack(img)
 
     def clear_image_background(
         self,

@@ -9,6 +9,7 @@ from typing import Dict, Any
 # Third-party imports
 import pandas as pd
 import ome_types
+import os
 
 
 def remove_file_extension(filename: str) -> str:
@@ -146,3 +147,37 @@ def update_config(
     
     _recursive_update(result, override_dict)
     return result
+
+
+def check_btrack() -> bool:
+    """
+    Check if the btrack package contains the compiled library.
+    
+    Returns:
+        bool: True if the compiled library is found, False otherwise.
+    """
+    try:
+        import btrack
+        # Get the btrack package path
+        btrack_path = os.path.dirname(btrack.__file__)
+        libs_path = os.path.join(btrack_path, 'libs')
+        
+        if not os.path.exists(libs_path):
+            return False
+        
+        # Check for compiled library files for different OS
+        library_files = [
+            'libtracker.dylib',  # macOS
+            'libtracker.so',     # Linux
+            'tracker.dll'        # Windows
+        ]
+        
+        for lib_file in library_files:
+            lib_path = os.path.join(libs_path, lib_file)
+            if os.path.exists(lib_path):
+                return True
+        
+        return False
+        
+    except ImportError:
+        return False

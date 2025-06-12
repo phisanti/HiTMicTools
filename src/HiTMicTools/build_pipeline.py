@@ -5,7 +5,7 @@ import sys
 from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
-
+from HiTMicTools.utils import check_btrack
 
 def build_and_run_pipeline(config_file: str, worklist: str = None):
     """
@@ -70,6 +70,11 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
 
     # Load tracker if tracking is enabled and config is provided
     if configs.pipeline_setup.get("tracking", False):
+        if not check_btrack():
+            print("\033[1mError: btrack package is missing or not properly compiled. Please check the installation README at "
+                  "https://github.com/phisanti/HiTMicTools for proper btrack compilation instructions.\033[0m")
+            sys.exit(1)
+
         tracking_config = configs.get("tracking", {})
         tracker_override_args = tracking_config.get("parameters_override", None)
         

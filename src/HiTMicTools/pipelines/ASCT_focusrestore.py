@@ -123,7 +123,7 @@ class ASCT_focusRestoration(BasePipeline):
         if align_frames:
             img_logger.info("2.1 - Aligning frames in the stack", show_memory=True)
             ip.align_image(
-                ref_channel=0, ref_slice=0, compres_align=0.75, crop_image=True, reference="previous"
+                ref_channel=0, ref_slice=-1, crop_image=True, reference_type="previous"
             )
             img_logger.info("2.1 - Frame alignment completed", show_memory=True)
         # Update size x and size y after alignment and maybe crop
