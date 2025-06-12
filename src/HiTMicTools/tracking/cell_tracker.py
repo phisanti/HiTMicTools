@@ -191,14 +191,11 @@ class CellTracker:
                 # Set tracking parameters
                 tracker.tracking_updates = self.tracking_updates
                 tracker.update_method = BayesianUpdates.APPROXIMATE
-                tracker.max_search_radius=7
-                print(f'Tracker max_radius_search: {tracker.max_search_radius}')
-                print(f'This are the tracking updates: {tracker.tracking_updates}')
-                print(f'Tracking in volume bounds: {xmax}, {ymax}')
+                tracker.features = self.features
+
                 # Append objects and set volume
                 tracker.append(tracking_data)
                 tracker.volume = ((0, xmax), (0, ymax))#, (10e-6, 10e-6))
-                print(f'Tracker max_radius_search: {tracker.max_search_radius}')
                 # Run tracking
                 tracker.track(step_size=10000)
                 tracker.optimize()
