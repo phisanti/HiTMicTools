@@ -228,11 +228,14 @@ class CellTracker:
             'x': 'centroid_1'
         })
         
-        return merge_tracking_results(
+        out= merge_tracking_results(
             measurements_df,
             merge_df[['trackid', 'frame', 'centroid_0', 'centroid_1']], 
             merge_on=['frame', 'centroid_0', 'centroid_1']
         )
+        # Set trackid to integer so that it can be read by TrackMate
+        out['trackid'] = out['trackid'].fillna(-1).astype('int32')
+        return out
     
     def _configure_btrack_logging(self, target_logger: logging.Logger) -> None:
         """Configure all btrack-related loggers to use our target logger."""
