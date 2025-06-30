@@ -228,7 +228,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info("4 - Starting measurements", show_memory=True)
         img_logger.info("4.1 - Extracting background fluorescence intensity")
         bck_fl = measure_background_intensity(
-            img_analyser.img, img_analyser.labeled_mask, target_channel=1
+            img_analyser.img, img_analyser.labeled_mask, target_channel=pi_channel
         )
 
         fl_prop = [
@@ -245,7 +245,7 @@ class ASCT_focusRestoration(BasePipeline):
         ]
         img_logger.info("4.2 - Extracting fluorescence measurements")
         fl_measurements = img_analyser.get_roi_measurements(
-            target_channel=1,
+            target_channel=pi_channel,
             properties=fl_prop,
             extra_properties=(roi_skewness, roi_std_dev),
         )
