@@ -5,6 +5,7 @@ import sys
 from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
+from HiTMicTools.pipelines.ASCT_zaslavier import ASCT_zaslavier
 from HiTMicTools.utils import check_btrack
 
 def build_and_run_pipeline(config_file: str, worklist: str = None):
@@ -36,6 +37,7 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
     pipeline_map = {
         "ASCT_focusrestore": ASCT_focusRestoration,
         "toprak_nn": Toprak_updated_nn,
+        "ASCT_zaslavier": ASCT_zaslavier,
     }
 
     pipeline_name = configs.pipeline_setup["name"]
