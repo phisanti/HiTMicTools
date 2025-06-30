@@ -46,7 +46,7 @@ import time
 import random
 
 
-class ASCT_focusRestoration(BasePipeline):
+class ASCT_zaslavier(BasePipeline):
     """
     Pipeline for automated single-cell tracking with focus restoration.
 
