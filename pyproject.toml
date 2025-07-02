@@ -32,7 +32,7 @@ dependencies = [
     "scipy",
     "tifffile",
     "monai",
-    "pystackreg",
+    "templatematchingpy",
     "psutil",   
     "nd2",
     "opencv-python",
