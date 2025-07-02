@@ -193,9 +193,7 @@ class ASCT_focusRestoration(BasePipeline):
             buffer_dim=-1,
             sw_batch_size=1,
         )
-        img_logger.info(
-            "3.1 - Segmentation completed", show_memory=True, cuda=is_cuda
-        )
+        img_logger.info("3.1 - Segmentation completed", show_memory=True, cuda=is_cuda)
 
         # Get ROIs
         if prob_map.ndim > 3 and prob_map.shape[1] > 1:
@@ -222,7 +220,11 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info("3.2 - Classifying ROIs", show_memory=True, cuda=is_cuda)
         wait_for_memory(required_gb=12, device=device, logger=img_logger)
         object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=2)
-        img_logger.info("3.2 - GPU memory status after classification", show_memory=True, cuda=is_cuda)
+        img_logger.info(
+            "3.2 - GPU memory status after classification",
+            show_memory=True,
+            cuda=is_cuda,
+        )
 
         # 4.1 Calc. measurements --------------------------------------------
         img_logger.info("4 - Starting measurements", show_memory=True)
@@ -238,10 +240,10 @@ class ASCT_focusRestoration(BasePipeline):
             "min_intensity",
             "mean_intensity",
             "area",
-            "major_axis_length", 
-            "minor_axis_length", 
+            "major_axis_length",
+            "minor_axis_length",
             "solidity",
-            "orientation", 
+            "orientation",
         ]
         img_logger.info("4.2 - Extracting fluorescence measurements")
         fl_measurements = img_analyser.get_roi_measurements(
@@ -260,23 +262,21 @@ class ASCT_focusRestoration(BasePipeline):
         ] = fl_measurements[["max_intensity", "min_intensity", "mean_intensity"]].div(
             fl_measurements["background"], axis=0
         )
-        
+
         # 4.4 Object tracking (if enabled)
         if self.tracking and self.cell_tracker is not None:
             img_logger.info("4.4 - Running object tracking")
-            track_features=fl_prop[5:10]
+            track_features = fl_prop[5:10]
             self.cell_tracker.set_features(track_features)
             try:
                 fl_measurements = self.cell_tracker.track_objects(
-                    fl_measurements,
-                    volume_bounds=(size_x, size_y),
-                    logger=img_logger
+                    fl_measurements, volume_bounds=(size_x, size_y), logger=img_logger
                 )
                 img_logger.info("4.4 - Object tracking completed successfully")
             except Exception as e:
                 img_logger.error(f"Object tracking failed: {e}")
                 # Continue without tracking
-        
+
         counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
         img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
         img_logger.info("4 - Measurements completed", show_memory=True)

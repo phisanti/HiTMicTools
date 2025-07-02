@@ -284,43 +284,46 @@ class BasePipeline(ABC):
         )
 
     def load_tracker(
-        self, 
-        config_path: str, 
-        tracker_override_args: Optional[Dict[str, Any]] = None
+        self, config_path: str, tracker_override_args: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Load and configure cell tracker from config file or zip bundle.
-        
+
         Args:
             config_path: Path to config file (.yml/.json) or zip bundle
             tracker_override_args: Optional dict to override tracker parameters
         """
-        
+
         # Validate file exists
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Tracker config not found: {config_path}")
-        
+
         # Load configuration based on file type
-        if config_path.endswith('.zip'):
+        if config_path.endswith(".zip"):
             config = self._load_tracker_config_from_zip(config_path)
             # Apply override arguments if provided
             if tracker_override_args:
-                config = update_config(config, tracker_override_args, logger=self.main_logger)
-            
+                config = update_config(
+                    config, tracker_override_args, logger=self.main_logger
+                )
+
             self.cell_tracker = CellTracker(config_dict=config)
         else:
             # For standalone files, pass config_path
             override_args = tracker_override_args or {}
-            self.cell_tracker = CellTracker(config_dict=config_path, override_args=override_args)
-        
+            self.cell_tracker = CellTracker(
+                config_dict=config_path, override_args=override_args
+            )
+
         self.main_logger.info(f"Cell tracker loaded from: {config_path}")
+
     def _load_tracker_config_from_zip(self, zip_path: str) -> Dict[str, Any]:
         """Load tracker config from zip file."""
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            if 'config_tracker.yml' not in zip_ref.namelist():
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            if "config_tracker.yml" not in zip_ref.namelist():
                 raise FileNotFoundError("config_tracker.yml not found in zip root")
-            
-            with zip_ref.open('config_tracker.yml') as config_file:
+
+            with zip_ref.open("config_tracker.yml") as config_file:
                 return yaml.safe_load(config_file)
 
     def config_image_analysis(

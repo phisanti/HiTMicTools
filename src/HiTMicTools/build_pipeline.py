@@ -8,6 +8,7 @@ from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
 from HiTMicTools.pipelines.ASCT_zaslavier import ASCT_zaslavier
 from HiTMicTools.utils import check_btrack
 
+
 def build_and_run_pipeline(config_file: str, worklist: str = None):
     """
     Build and run the image analysis pipeline based on configuration.
@@ -73,20 +74,26 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
     # Load tracker if tracking is enabled and config is provided
     if configs.pipeline_setup.get("tracking", False):
         if not check_btrack():
-            print("\033[1mError: btrack package is missing or not properly compiled. Please check the installation README at "
-                  "https://github.com/phisanti/HiTMicTools for proper btrack compilation instructions.\033[0m")
+            print(
+                "\033[1mError: btrack package is missing or not properly compiled. Please check the installation README at "
+                "https://github.com/phisanti/HiTMicTools for proper btrack compilation instructions.\033[0m"
+            )
             sys.exit(1)
 
         tracking_config = configs.get("tracking", {})
         tracker_override_args = tracking_config.get("parameters_override", None)
-        
+
         config_path = tracking_config.get("config_path")
-        
+
         if model_bundle:
-            analysis_wf.load_tracker(model_bundle, tracker_override_args=tracker_override_args)
+            analysis_wf.load_tracker(
+                model_bundle, tracker_override_args=tracker_override_args
+            )
             print(f"Tracking enabled with config from bundle: {model_bundle}")
         elif config_path:
-            analysis_wf.load_tracker(config_path, tracker_override_args=tracker_override_args)
+            analysis_wf.load_tracker(
+                config_path, tracker_override_args=tracker_override_args
+            )
             print(f"Tracking enabled with config: {config_path}")
         else:
             print("Warning: Tracking enabled but no config source provided")

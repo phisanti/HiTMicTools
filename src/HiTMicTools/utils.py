@@ -113,28 +113,37 @@ def read_metadata(metadata_file: str) -> Dict[str, Any]:
         metadata = json.load(f)
     return metadata
 
+
 def update_config(
-    target_dict: Dict[str, Any], override_dict: Dict[str, Any], logger: logging.Logger = None
+    target_dict: Dict[str, Any],
+    override_dict: Dict[str, Any],
+    logger: logging.Logger = None,
 ) -> Dict[str, Any]:
     """
     Recursively update a nested dictionary with override values.
-    
+
     Args:
         target_dict (Dict[str, Any]): The original dictionary to update.
         override_dict (Dict[str, Any]): Dictionary containing override values.
         logger (logging.Logger, optional): Logger for tracking changes.
-        
+
     Returns:
         Dict[str, Any]: Updated dictionary with override values applied.
     """
-    
+
     result = copy.deepcopy(target_dict)
-    
-    def _recursive_update(target: Dict[str, Any], override: Dict[str, Any], path: str = "") -> None:
+
+    def _recursive_update(
+        target: Dict[str, Any], override: Dict[str, Any], path: str = ""
+    ) -> None:
         for key, value in override.items():
             current_path = f"{path}.{key}" if path else key
-            
-            if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+
+            if (
+                key in target
+                and isinstance(target[key], dict)
+                and isinstance(value, dict)
+            ):
                 _recursive_update(target[key], value, current_path)
             else:
                 if key in target and logger:
@@ -144,7 +153,7 @@ def update_config(
                 elif logger:
                     logger.warning(f"Current path not found: {current_path}")
                 target[key] = value
-    
+
     _recursive_update(result, override_dict)
     return result
 
@@ -152,32 +161,33 @@ def update_config(
 def check_btrack() -> bool:
     """
     Check if the btrack package contains the compiled library.
-    
+
     Returns:
         bool: True if the compiled library is found, False otherwise.
     """
     try:
         import btrack
+
         # Get the btrack package path
         btrack_path = os.path.dirname(btrack.__file__)
-        libs_path = os.path.join(btrack_path, 'libs')
-        
+        libs_path = os.path.join(btrack_path, "libs")
+
         if not os.path.exists(libs_path):
             return False
-        
+
         # Check for compiled library files for different OS
         library_files = [
-            'libtracker.dylib',  # macOS
-            'libtracker.so',     # Linux
-            'tracker.dll'        # Windows
+            "libtracker.dylib",  # macOS
+            "libtracker.so",  # Linux
+            "tracker.dll",  # Windows
         ]
-        
+
         for lib_file in library_files:
             lib_path = os.path.join(libs_path, lib_file)
             if os.path.exists(lib_path):
                 return True
-        
+
         return False
-        
+
     except ImportError:
         return False

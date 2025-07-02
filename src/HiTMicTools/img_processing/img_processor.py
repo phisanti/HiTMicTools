@@ -109,15 +109,20 @@ class ImagePreprocessor:
         # Register the stack
         # Note that reference_channel is not stored as it might be scaled to mean
         ref_aligned = self.aligner.register_stack(
-            reference_channel, bbox=bbox, reference_slice=ref_slice, reference_type=reference_type
+            reference_channel,
+            bbox=bbox,
+            reference_slice=ref_slice,
+            reference_type=reference_type,
         )
         self.tmats = self.aligner.translation_matrices
-        
+
         # Apply the transformation to the entire image stack (all channels and slices)
-        index_table = stack_indexer(range(self.frames_size), range(self.slices_size), range(self.channels_size))
+        index_table = stack_indexer(
+            range(self.frames_size), range(self.slices_size), range(self.channels_size)
+        )
         index_table_sc = [(s, c) for t, s, c in index_table]
         index_table_sc = set(index_table_sc)
-        for s, c in index_table_sc:            
+        for s, c in index_table_sc:
             img_stack = self.img[:, s, c, :, :]
             reg_stack = self.aligner.transform_stack(img_stack)
             self.img[:, s, c, :, :] = reg_stack

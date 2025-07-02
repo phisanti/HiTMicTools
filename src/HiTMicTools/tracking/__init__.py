@@ -1,7 +1,7 @@
 """
 Multi-object tracking module for HiTMicTools.
 
-This module provides tracking capabilities for microscopy data, 
+This module provides tracking capabilities for microscopy data,
 integrating with the existing pipeline for temporal analysis.
 """
 
@@ -11,8 +11,8 @@ from .tracking_utils import prepare_dataframe_for_tracking, merge_tracking_resul
 
 __all__ = [
     "CellTracker",
-    "TrackingConfigValidator", 
+    "TrackingConfigValidator",
     "ConfigLoader",
     "prepare_dataframe_for_tracking",
-    "merge_tracking_results"
+    "merge_tracking_results",
 ]
