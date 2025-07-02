@@ -29,7 +29,8 @@ class MemoryLogger(logging.Logger):
 
         if show_memory:
             try:
-                ram_used = get_memory_usage(unit="GB", as_string=False)
+                cpu_device = torch.device("cpu")
+                ram_used = get_memory_usage(device=cpu_device, unit="GB", as_string=False)
                 message += f" | RAM: {ram_used:.2f} GB used"
             except Exception as e:
                 message += f" | RAM: Error ({e})"

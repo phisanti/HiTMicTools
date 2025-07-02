@@ -77,13 +77,12 @@ def get_memory_usage(
 
     # Get memory based on device type
     if device.type == "cuda":
+        free_mem, _ = torch.cuda.mem_get_info(device)
         if free:
-            memory_value = (
-                torch.cuda.get_device_properties(device).total_memory
-                - torch.cuda.memory_allocated(device)
-            ) / divisor
+            memory_value = free_mem / divisor
         else:
-            memory_value = torch.cuda.memory_allocated(device) / divisor
+            total_mem = torch.cuda.get_device_properties(device).total_memory
+            memory_value = (total_mem - free_mem) / divisor
     else:
         # For both CPU and MPS (Apple Silicon), use system memory
         if device.type == "cpu" or device.type == "mps":
@@ -129,13 +128,12 @@ def get_system_info() -> str:
         for i in range(num_gpus):
             device = torch.device(f"cuda:{i}")
             props = torch.cuda.get_device_properties(device)
-            total_mem = props.total_memory / (1024**3)
-            used_mem = torch.cuda.memory_allocated(device) / (1024**3)
-            free_mem = (props.total_memory - torch.cuda.memory_allocated(device)) / (
-                1024**3
-            )
+            total_mem = props.total_memory
+            free_mem, _ = torch.cuda.mem_get_info(device)
+            used_mem = total_mem - free_mem
+
             info += f"GPU {i}: {props.name}\n"
-            info += f"  Memory: {used_mem:.2f}GB used / {total_mem:.2f}GB total ({free_mem:.2f}GB free)\n"
+            info += f"  Memory: {used_mem / (1024**3):.2f}GB used / {total_mem / (1024**3):.2f}GB total ({free_mem / (1024**3):.2f}GB free)\n"
             # Utilization is not available via PyTorch, so we note this
             info += f"  GPU utilization: Not available via PyTorch\n"
     else:

@@ -220,8 +220,8 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 3.3 Classify ROIs
         img_logger.info("3.2 - Classifying ROIs", show_memory=True, cuda=is_cuda)
-        wait_for_memory(required_gb=7, device=device, logger=img_logger)
-        object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=4)
+        wait_for_memory(required_gb=12, device=device, logger=img_logger)
+        object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=2)
         img_logger.info("3.2 - GPU memory status after classification", show_memory=True, cuda=is_cuda)
 
         # 4.1 Calc. measurements --------------------------------------------
