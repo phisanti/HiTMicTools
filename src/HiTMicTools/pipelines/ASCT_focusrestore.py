@@ -11,8 +11,8 @@ from HiTMicTools.resource_management.memlogger import MemoryLogger
 from HiTMicTools.resource_management.sysutils import (
     empty_gpu_cache,
     get_device,
-    wait_for_memory,
-)
+    )
+from HiTMicTools.resource_management.reserveresource import ReserveResource
 from HiTMicTools.workflows import BasePipeline
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.img_processing.array_ops import convert_image
@@ -21,7 +21,6 @@ from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels
 from HiTMicTools.utils import get_timestamps, remove_file_extension
 from HiTMicTools.roi_analyser import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
-from HiTMicTools.tracking.cell_tracker import CellTracker
 
 # TODO: Currently, I can use the cupy based ROI analyser, but performance is lagging.
 # I will start working with the CPU-based ROI analyser and slowly move to the GPU-based.
@@ -41,8 +40,6 @@ from HiTMicTools.tracking.cell_tracker import CellTracker
 
 
 from jetraw_tools.image_reader import ImageReader
-import psutil
-import time
 import random
 
 
@@ -89,8 +86,6 @@ class ASCT_focusRestoration(BasePipeline):
         sleep_time = random.uniform(0, 10)
         img_logger = self.setup_logger(self.output_path, movie_name)
         img_logger.info(f"Start analysis for {movie_name}")
-        img_logger.info(f"Desyncing analysis for {sleep_time:.2f} seconds")
-        time.sleep(sleep_time)
         reference_channel = self.reference_channel
         pi_channel = self.pi_channel
         align_frames = self.align_frames
@@ -152,28 +147,30 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
-        wait_for_memory(required_gb=6, device=device, logger=img_logger)
-        ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
-            ip.img[:, 0, reference_channel],
-            rescale=False,
-            batch_size=1,
-            buffer_steps=4,
-            buffer_dim=-1,
-            sw_batch_size=1,
-        )
+        # wait_for_memory(required_gb=6, device=device, logger=img_logger)  # Remove this line
+        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):  # Add this
+            ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
+                ip.img[:, 0, reference_channel],
+                rescale=False,
+                batch_size=1,
+                buffer_steps=4,
+                buffer_dim=-1,
+                sw_batch_size=1,
+            )
         img_logger.info("2.2 - Restoring focus in the PI channel", show_memory=True)
         img_logger.info(
             f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
-        wait_for_memory(required_gb=6, device=device, logger=img_logger)
-        ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
-            ip.img[:, 0, pi_channel],
-            batch_size=1,
-            buffer_steps=4,
-            buffer_dim=-1,
-            sw_batch_size=1,
-            padding_mode="reflect",
-        )
+        # wait_for_memory(required_gb=6, device=device, logger=img_logger)  # Remove this line
+        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):  # Add this
+            ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
+                ip.img[:, 0, pi_channel],
+                batch_size=1,
+                buffer_steps=4,
+                buffer_dim=-1,
+                sw_batch_size=1,
+                padding_mode="reflect",
+            )
         img_logger.info(
             f"Reference channel intensity after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
@@ -185,14 +182,15 @@ class ASCT_focusRestoration(BasePipeline):
         ip.img_original = np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment Image --------------------------------------------
-        wait_for_memory(required_gb=6, device=device, logger=img_logger)
+        # wait_for_memory(required_gb=6, device=device, logger=img_logger)  # Remove this line
         img_logger.info("3.1 - Image segmentation", show_memory=True, cuda=is_cuda)
-        prob_map = self.image_segmentator.predict(
-            ip.img[:, 0, reference_channel, :, :],
-            buffer_steps=4,
-            buffer_dim=-1,
-            sw_batch_size=1,
-        )
+        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):  # Add this
+            prob_map = self.image_segmentator.predict(
+                ip.img[:, 0, reference_channel, :, :],
+                buffer_steps=4,
+                buffer_dim=-1,
+                sw_batch_size=1,
+            )
         img_logger.info("3.1 - Segmentation completed", show_memory=True, cuda=is_cuda)
 
         # Get ROIs
@@ -218,8 +216,9 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 3.3 Classify ROIs
         img_logger.info("3.2 - Classifying ROIs", show_memory=True, cuda=is_cuda)
-        wait_for_memory(required_gb=12, device=device, logger=img_logger)
-        object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=2)
+        # wait_for_memory(required_gb=12, device=device, logger=img_logger)  # Remove this line
+        with ReserveResource(device, 10.0, logger=img_logger, timeout=240):
+            object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=1)
         img_logger.info(
             "3.2 - GPU memory status after classification",
             show_memory=True,
