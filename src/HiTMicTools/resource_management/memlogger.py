@@ -31,9 +31,12 @@ class MemoryLogger(logging.Logger):
             try:
                 cpu_device = torch.device("cpu")
                 ram_used = get_memory_usage(
-                    device=cpu_device, unit="GB", as_string=False
+                    device=cpu_device, free=False, unit="GB", as_string=False
                 )
-                message += f" | RAM: {ram_used:.2f} GB used"
+                ram_free = get_memory_usage(
+                    device=cpu_device, free=True, unit="GB", as_string=False
+                )
+                message += f" | RAM: {ram_used:.2f} GB used / {ram_free:.2f} GB free"
             except Exception as e:
                 message += f" | RAM: Error ({e})"
 
@@ -42,7 +45,7 @@ class MemoryLogger(logging.Logger):
                 try:
                     cuda_device = torch.device("cuda")
                     vram_used = get_memory_usage(
-                        device=cuda_device, unit="GB", as_string=False
+                        device=cuda_device, free=True, unit="GB", as_string=False
                     )
                     vram_free = get_memory_usage(
                         device=cuda_device, free=True, unit="GB", as_string=False
