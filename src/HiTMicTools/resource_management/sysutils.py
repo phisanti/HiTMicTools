@@ -1,11 +1,16 @@
-import gc
 import os
-import sys
 import platform
+import sys
 import time
-from typing import Optional, Union
-from logging import Logger
+from typing import Literal, Optional, Union
 
+# Platform-specific imports
+if platform.system() == "Windows":
+    import msvcrt
+else:
+    import fcntl
+
+# Third-party imports
 import psutil
 import torch
 
@@ -66,7 +71,6 @@ def get_memory_usage(
 
     divisor = 1024 * 1024 if unit == "MB" else 1024 * 1024 * 1024
 
-    # If no device specified, get the current active device
     if device is None:
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -75,32 +79,17 @@ def get_memory_usage(
         else:
             device = torch.device("cpu")
 
-    # Get memory based on device type
     if device.type == "cuda":
-        free_mem, _ = torch.cuda.mem_get_info(device)
-        if free:
-            memory_value = free_mem / divisor
-        else:
-            total_mem = torch.cuda.get_device_properties(device).total_memory
-            memory_value = (total_mem - free_mem) / divisor
+        free_mem, total_mem = torch.cuda.mem_get_info(device)
+        memory_value = free_mem / divisor if free else (total_mem - free_mem) / divisor
+    elif device.type == "mps":
+        system_memory = psutil.virtual_memory()
+        memory_value = system_memory.available / divisor if free else system_memory.used / divisor
     else:
-        # For both CPU and MPS (Apple Silicon), use system memory
-        if device.type == "cpu" or device.type == "mps":
-            system_memory = psutil.virtual_memory()
-            if free:
-                memory_value = system_memory.available / divisor
-            else:
-                memory_value = (system_memory.total - system_memory.available) / divisor
-        else:
-            # For process memory (backward compatibility with old get_memory_usage)
-            process = psutil.Process()
-            memory_info = process.memory_info()
-            memory_value = memory_info.rss / divisor
+        system_memory = psutil.virtual_memory()
+        memory_value = system_memory.available / divisor if free else system_memory.used / divisor
 
-    if as_string:
-        return f"{memory_value:.2f} {unit}"
-    return memory_value
-
+    return f"{memory_value:.2f} {unit}" if as_string else memory_value
 
 def get_system_info() -> str:
     """
@@ -120,7 +109,6 @@ def get_system_info() -> str:
     info += f"CPU Model: {cpu_model}\n"
     info += f"CPU Cores: {os.cpu_count()}\n"
     info += f"CPU Usage: {cpu_percent}%\n"
-
     info += f"Memory: {mem_percent:.2f}% used ({memory.used / (1024**3):.2f}GB / {memory.total / (1024**3):.2f}GB)\n"
 
     if torch.cuda.is_available():
@@ -134,7 +122,6 @@ def get_system_info() -> str:
 
             info += f"GPU {i}: {props.name}\n"
             info += f"  Memory: {used_mem / (1024**3):.2f}GB used / {total_mem / (1024**3):.2f}GB total ({free_mem / (1024**3):.2f}GB free)\n"
-            # Utilization is not available via PyTorch, so we note this
             info += f"  GPU utilization: Not available via PyTorch\n"
     else:
         info += "No GPUs detected\n"
@@ -142,75 +129,88 @@ def get_system_info() -> str:
     return info
 
 
-def wait_for_memory(
-    required_gb: float = 4,
-    device: Optional[torch.device] = None,
-    check_interval: int = 5,
-    max_wait: int = 60,
-    logger: Optional[Logger] = None,
-    raise_on_timeout: bool = False,
+def file_lock_manager(
+    file_handle, 
+    operation: Literal["lock_exclusive", "lock_shared", "unlock"],
+    max_retries: int = 5,
+    retry_delay: float = 0.1
 ) -> bool:
     """
-    Wait until sufficient free memory is available or timeout occurs.
-
+    Cross-platform file locking utility.
+    
     Args:
-        required_gb (float): Minimum free memory required in GB. If 0, it will not wait.
-        device (torch.device, optional): The device to check memory for. If None, uses current active device.
-        check_interval (int): Seconds between memory checks.
-        max_wait (int): Maximum seconds to wait before timeout.
-        logger (Logger, optional): Logger for status messages.
-        raise_on_timeout (bool): Raise MemoryError on timeout if True.
-
+        file_handle: Open file object
+        operation: Type of operation to perform
+            - "lock_exclusive": Exclusive lock (write lock)
+            - "lock_shared": Shared lock (read lock) 
+            - "unlock": Release lock
+        max_retries: Maximum number of retry attempts
+        retry_delay: Initial delay between retries (exponential backoff)
+    
     Returns:
-        bool: True if sufficient memory became available, False if timed out.
-
+        bool: True if operation successful, False otherwise
+    
     Raises:
-        MemoryError: If raise_on_timeout is True and wait times out or required memory exceeds total system memory.
+        OSError: If locking fails after all retries
     """
-
-    if not required_gb:
-        return True
-
-    if device is None:
-        device = get_device()
-
-    if device.type == "cuda":
-        total_gb = torch.cuda.get_device_properties(device).total_memory / (1024**3)
-    else:
-        total_gb = psutil.virtual_memory().total / (1024**3)
-
-    if required_gb > total_gb:
-        msg = (
-            f"Requested memory ({required_gb:.2f} GB) exceeds total memory on {device.type} "
-            f"({total_gb:.2f} GB)."
-        )
-        if logger:
-            logger.error(msg)
-        if raise_on_timeout:
-            raise MemoryError(msg)
-        return False
-
-    start_time = time.time()
-    while True:
-        free_mem = get_memory_usage(free=True, device=device, unit="GB")
-        if free_mem >= required_gb:
-            if logger:
-                logger.info(f"Sufficient memory available: {free_mem:.2f} GB")
+    
+    def _windows_lock(file_handle, operation: str, attempt: int = 0) -> bool:
+        """Windows-specific file locking using msvcrt."""
+        try:
+            if operation == "lock_exclusive":
+                msvcrt.locking(file_handle.fileno(), msvcrt.LK_LOCK, 1)
+            elif operation == "lock_shared":
+                # Windows doesn't have shared locks in msvcrt, use exclusive
+                msvcrt.locking(file_handle.fileno(), msvcrt.LK_LOCK, 1)
+            elif operation == "unlock":
+                msvcrt.locking(file_handle.fileno(), msvcrt.LK_UNLCK, 1)
             return True
+        except IOError as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (2 ** attempt))
+                return _windows_lock(file_handle, operation, attempt + 1)
+            raise OSError(f"Windows file lock operation '{operation}' failed: {e}")
+    
+    def _unix_lock(file_handle, operation: str, attempt: int = 0) -> bool:
+        """Unix-specific file locking using fcntl."""
+        try:
+            if operation == "lock_exclusive":
+                fcntl.flock(file_handle.fileno(), fcntl.LOCK_EX)
+            elif operation == "lock_shared":
+                fcntl.flock(file_handle.fileno(), fcntl.LOCK_SH)
+            elif operation == "unlock":
+                fcntl.flock(file_handle.fileno(), fcntl.LOCK_UN)
+            return True
+        except (IOError, OSError) as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (2 ** attempt))
+                return _unix_lock(file_handle, operation, attempt + 1)
+            raise OSError(f"Unix file lock operation '{operation}' failed: {e}")
+    
+    # Route to appropriate platform-specific implementation
+    if platform.system() == "Windows":
+        return _windows_lock(file_handle, operation)
+    else:
+        return _unix_lock(file_handle, operation)
 
-        elapsed = time.time() - start_time
-        if elapsed >= max_wait:
-            msg = f"Memory wait timeout after {max_wait}s (free: {free_mem:.2f} GB, required: {required_gb} GB)"
-            if logger:
-                logger.error(msg)
-            if raise_on_timeout:
-                raise MemoryError(msg)
+
+
+def is_file_locked(file_path: str) -> bool:
+    """
+    Check if a file is currently locked by attempting to acquire an exclusive lock.
+    
+    Args:
+        file_path: Path to the file to check
+        
+    Returns:
+        bool: True if file is locked, False if available
+    """
+    try:
+        with open(file_path, 'r') as f:
+            file_lock_manager(f, "lock_exclusive")
+            file_lock_manager(f, "unlock")
             return False
-
-        if logger:
-            logger.warning(
-                f"Insufficient memory: {free_mem:.2f} GB available, {required_gb} GB required "
-                f"(waited {elapsed:.1f}/{max_wait}s)"
-            )
-        gc.collect()
-        time.sleep(check_interval)
+    except (OSError, IOError):
+        return True
+    except FileNotFoundError:
+        return False
