@@ -147,8 +147,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
-        # wait_for_memory(required_gb=6, device=device, logger=img_logger)  # Remove this line
-        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):  # Add this
+        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
             ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
                 ip.img[:, 0, reference_channel],
                 rescale=False,
@@ -161,8 +160,7 @@ class ASCT_focusRestoration(BasePipeline):
         img_logger.info(
             f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
         )
-        # wait_for_memory(required_gb=6, device=device, logger=img_logger)  # Remove this line
-        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):  # Add this
+        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
             ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
                 ip.img[:, 0, pi_channel],
                 batch_size=1,
@@ -182,9 +180,8 @@ class ASCT_focusRestoration(BasePipeline):
         ip.img_original = np.zeros((1, 1, 1, 1, 1))
 
         # 3.1 Segment Image --------------------------------------------
-        # wait_for_memory(required_gb=6, device=device, logger=img_logger)  # Remove this line
         img_logger.info("3.1 - Image segmentation", show_memory=True, cuda=is_cuda)
-        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):  # Add this
+        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
             prob_map = self.image_segmentator.predict(
                 ip.img[:, 0, reference_channel, :, :],
                 buffer_steps=4,
@@ -216,7 +213,6 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 3.3 Classify ROIs
         img_logger.info("3.2 - Classifying ROIs", show_memory=True, cuda=is_cuda)
-        # wait_for_memory(required_gb=12, device=device, logger=img_logger)  # Remove this line
         with ReserveResource(device, 10.0, logger=img_logger, timeout=240):
             object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=1)
         img_logger.info(

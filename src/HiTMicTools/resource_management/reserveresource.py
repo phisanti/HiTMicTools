@@ -95,7 +95,6 @@ class ReserveResource:
             booking_file = f"memory_bookings_{device.type}.json"
         
         self.booking_path = os.path.join(base_tmp_dir, booking_file)
-    
     def _log(self, message: str, level: str = "info"):
         """
         Log a message using the configured logger.
@@ -125,19 +124,37 @@ class ReserveResource:
         if not os.path.exists(self.booking_path):
             return {"bookings": {}, "last_cleanup": time.time()}
         
-        try:
-            with open(self.booking_path, 'r') as f:
-                file_lock_manager(f, "lock_shared")
-                try:
-                    data = json.load(f)
-                    return data
-                finally:
-                    file_lock_manager(f, "unlock")
-        except (json.JSONDecodeError, FileNotFoundError):
-            return {"bookings": {}, "last_cleanup": time.time()}
-        except OSError as e:
-            self._log(f"Failed to read bookings: {e}", "warning")
-            return {"bookings": {}, "last_cleanup": time.time()}
+        # Retry mechanism for file reading on macOS
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with open(self.booking_path, 'r') as f:
+                    # Only use shared lock for reading, and handle failures gracefully
+                    try:
+                        file_lock_manager(f, "lock_shared")
+                        data = json.load(f)
+                        file_lock_manager(f, "unlock")
+                        return data
+                    except Exception as lock_error:
+                        # If locking fails, try reading without lock as fallback
+                        self._log(f"Lock failed, reading without lock: {lock_error}")
+                        f.seek(0)  # Reset file position
+                        data = json.load(f)
+                        return data
+                        
+            except (json.JSONDecodeError, FileNotFoundError):
+                if attempt == max_retries - 1:
+                    self._log("File corrupted or not found, returning default")
+                    return {"bookings": {}, "last_cleanup": time.time()}
+                time.sleep(0.1)  # Brief pause before retry
+                
+            except OSError as e:
+                if attempt == max_retries - 1:
+                    self._log(f"Failed to read bookings after {max_retries} attempts: {e}", "warning")
+                    return {"bookings": {}, "last_cleanup": time.time()}
+                time.sleep(0.1)
+        
+        return {"bookings": {}, "last_cleanup": time.time()}
     
     def _write_bookings(self, data: Dict[str, Any]) -> None:
         """
@@ -156,26 +173,44 @@ class ReserveResource:
         temp_path = self.booking_path + f".tmp.{self._process_id}"
         
         try:
-            with open(temp_path, 'w') as f:
-                file_lock_manager(f, "lock_exclusive")
-                try:
-                    json.dump(data, f, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                finally:
-                    file_lock_manager(f, "unlock")
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(self.booking_path), exist_ok=True)
             
-            # Atomic rename (cross-platform)
-            if platform.system() == "Windows" and os.path.exists(self.booking_path):
-                os.unlink(self.booking_path)
-            os.rename(temp_path, self.booking_path)
+            # Create and write to temp file without immediate locking
+            with open(temp_path, 'w') as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            
+            # Verify temp file exists after creation
+            if not os.path.exists(temp_path):
+                raise OSError(f"Temporary file {temp_path} was not created successfully")
+            
+            # Use a retry mechanism for macOS with proper locking
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    # For Windows, remove existing file first
+                    if platform.system() == "Windows" and os.path.exists(self.booking_path):
+                        os.unlink(self.booking_path)
+                    
+                    # Atomic rename
+                    os.rename(temp_path, self.booking_path)
+                    break
+                    
+                except OSError as rename_error:
+                    if attempt == max_retries - 1:
+                        self._log(f"Failed to rename after {max_retries} attempts: {rename_error}", "error")
+                        raise
+                    self._log(f"Rename attempt {attempt + 1} failed: {rename_error}, retrying...", "warning")
+                    time.sleep(0.1 * (attempt + 1))  # Exponential backoff
             
         except Exception as e:
             if os.path.exists(temp_path):
                 try:
                     os.unlink(temp_path)
-                except OSError:
-                    pass
+                except OSError as cleanup_error:
+                    self._log(f"Failed to cleanup temp file: {cleanup_error}", "warning")
             raise e
     
     def _cleanup_stale_bookings(self, data: Dict[str, Any]) -> Dict[str, Any]:
