@@ -469,9 +469,11 @@ class ASCT_zaslavier(BasePipeline):
         pixel_size: Physical pixel size in microns
         """
         # If using the basicpy_fl in config, reference channel is still transform with DoG
+        pi_channel = getattr(self, "pi_channel", None)
+        gfp_channel = getattr(self, "gfp_channel", None)
         if method == "basicpy_fl" and channel == self.reference_channel:
             method = "standard"
-        elif method == "basicpy_fl" and channel == self.pi_channel:
+        elif method == "basicpy_fl" and channel in (pi_channel, gfp_channel):
             method = "basicpy"
 
         methods = {
