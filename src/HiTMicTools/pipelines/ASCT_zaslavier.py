@@ -89,6 +89,7 @@ class ASCT_zaslavier(BasePipeline):
         img_logger.info(f"Start analysis for {movie_name}")
         reference_channel = self.reference_channel
         pi_channel = self.pi_channel
+        gfp_channel = getattr(self, "gfp_channel", None)
         align_frames = self.align_frames
         tracking = self.tracking
         method = self.method
@@ -140,6 +141,9 @@ class ASCT_zaslavier(BasePipeline):
         self.clear_background(
             ip, channel=pi_channel, nFrames=range(nFrames), method=method
         )
+        self.clear_background(
+            ip, channel=gfp_channel, nFrames=range(nFrames), method=method
+        )
 
         # 2.2 Focus restoration in the reference channel
         img_logger.info(
@@ -170,6 +174,18 @@ class ASCT_zaslavier(BasePipeline):
                 sw_batch_size=1,
                 padding_mode="reflect",
             )
+        
+        if gfp_channel is not None:
+            img_logger.info("2.2 - Restoring focus in the GFP channel", show_memory=True)
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                ip.img[:, 0, gfp_channel] = self.fl_focus_restorer.predict(
+                    ip.img[:, 0, gfp_channel],
+                    batch_size=1,
+                    buffer_steps=4,
+                    buffer_dim=-1,
+                    sw_batch_size=1,
+                    padding_mode="reflect",
+                )
         img_logger.info(
             f"Reference channel intensity after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
         )
