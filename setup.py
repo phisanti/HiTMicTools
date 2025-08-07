@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="hitmictools",
-    version="0.4.0",
+    version="0.4.1",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     long_description=open("README.md").read(),

@@ -140,41 +140,44 @@ class ASCT_focusRestoration(BasePipeline):
             ip, channel=pi_channel, nFrames=range(nFrames), method=method
         )
 
-        # 2.2 Focus restoration in the reference channel
-        img_logger.info(
-            "2.2 - Restoring focus in the reference channel", show_memory=True
-        )
-        img_logger.info(
-            f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
-        )
-        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
-            ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
-                ip.img[:, 0, reference_channel],
-                rescale=False,
-                batch_size=1,
-                buffer_steps=4,
-                buffer_dim=-1,
-                sw_batch_size=1,
+        # 2.2 Focus restoration (conditional)
+        if getattr(self, 'focus_correction', True):  # Default to True for backward compatibility
+            img_logger.info(
+                "2.2 - Restoring focus in the reference channel", show_memory=True
             )
-        img_logger.info("2.2 - Restoring focus in the PI channel", show_memory=True)
-        img_logger.info(
-            f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
-        )
-        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
-            ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
-                ip.img[:, 0, pi_channel],
-                batch_size=1,
-                buffer_steps=4,
-                buffer_dim=-1,
-                sw_batch_size=1,
-                padding_mode="reflect",
+            img_logger.info(
+                f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
             )
-        img_logger.info(
-            f"Reference channel intensity after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
-        )
-        img_logger.info(
-            f"PI channel intensity after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
-        )
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
+                    ip.img[:, 0, reference_channel],
+                    rescale=False,
+                    batch_size=1,
+                    buffer_steps=4,
+                    buffer_dim=-1,
+                    sw_batch_size=1,
+                )
+            img_logger.info("2.2 - Restoring focus in the PI channel", show_memory=True)
+            img_logger.info(
+                f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            )
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
+                    ip.img[:, 0, pi_channel],
+                    batch_size=1,
+                    buffer_steps=4,
+                    buffer_dim=-1,
+                    sw_batch_size=1,
+                    padding_mode="reflect",
+                )
+            img_logger.info(
+                f"Reference channel intensity after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
+            )
+            img_logger.info(
+                f"PI channel intensity after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            )
+        else:
+            img_logger.info("2.2 - Focus correction disabled, skipping focus restoration", show_memory=True)
 
         # 2.4 Remove original image (not used after background corr) to save mem
         ip.img_original = np.zeros((1, 1, 1, 1, 1))

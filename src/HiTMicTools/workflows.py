@@ -353,7 +353,7 @@ class BasePipeline(ABC):
         Raises:
             ValueError: If required keys are missing or have invalid types
         """
-        required_keys = {"reference_channel": int, "align_frames": bool, "method": str}
+        required_keys = {"reference_channel": int, "align_frames": bool, "method": str, "focus_correction": bool}
 
         # Validate required keys and types
         for key, expected_type in required_keys.items():
