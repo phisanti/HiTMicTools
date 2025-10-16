@@ -5,8 +5,6 @@ import fnmatch
 import zipfile
 import tempfile
 import yaml
-import json
-
 import logging
 from logging.handlers import MemoryHandler
 
@@ -26,6 +24,7 @@ from HiTMicTools.resource_management.memlogger import MemoryLogger
 from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
+from HiTMicTools.model_components.oof_detector import OofDetector
 from HiTMicTools.tracking.cell_tracker import CellTracker
 from HiTMicTools.resource_management.sysutils import get_device, get_system_info
 from HiTMicTools.model_arch.nafnet import NAFNet
@@ -158,6 +157,16 @@ class BasePipeline(ABC):
             ValueError: If an invalid model type is provided or required arguments are missing.
             KeyError: If required configuration keys are missing.
         """
+        alias_map = {
+            "segmentation": "segmentator",
+            "cell_classifier": "cell-classifier",
+            "bf_focus": "focus-restorer-bf",
+            "fl_focus": "focus-restorer-fl",
+            "pi_classification": "pi-classifier",
+            "oof_detector": "oof-detector",
+        }
+        model_type = alias_map.get(model_type, model_type)
+
         if "model_path" not in config_dic:
             raise KeyError(
                 f"Required key 'model_path' missing from configuration for {model_type}"
@@ -193,6 +202,13 @@ class BasePipeline(ABC):
             )
         elif model_type == "pi-classifier":
             self.pi_classifier = PIClassifier(model_path)
+        elif model_type == "oof-detector":
+            self.oof_detector = OofDetector(
+                model_path,
+                model_type=model_configs.get("model_type", "rfdetrbase"),
+                **config_dic.get("inferer_args", {}),
+            )
+            self.oof_class_map = config_dic.get("inferer_args", {}).get("class_dict")
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 
@@ -227,6 +243,7 @@ class BasePipeline(ABC):
             "segmentation": "segmentator",
             "cell_classifier": "cell-classifier",
             "pi_classification": "pi-classifier",
+            "oof_detector": "oof-detector",
         }
 
         try:
