@@ -1,10 +1,13 @@
 import os
 import sys
 import unittest
+import tempfile
+import shutil
 
 from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
+from HiTMicTools.workflows import BasePipeline
 
 
 class TestPipelineConfigLoading(unittest.TestCase):
@@ -65,6 +68,58 @@ class TestPipelineConfigLoading(unittest.TestCase):
                     config_path, tracker_override_args=tracker_override_args
                 )
             # else: skip if not present
+
+
+class TestOofDetectorLoading(unittest.TestCase):
+    """Test OofDetector loading through workflows."""
+
+    def setUp(self):
+        """Create temporary directories for test pipeline."""
+        self.temp_input = tempfile.mkdtemp(prefix="test_input_")
+        self.temp_output = tempfile.mkdtemp(prefix="test_output_")
+
+    def tearDown(self):
+        """Clean up temporary directories."""
+        shutil.rmtree(self.temp_input, ignore_errors=True)
+        shutil.rmtree(self.temp_output, ignore_errors=True)
+
+    def test_oof_detector_loading_from_dict(self):
+        """Test loading OofDetector via load_model_fromdict."""
+        # Create minimal pipeline
+        class MinimalPipeline(BasePipeline):
+            def analyse_image(self, *args, **kwargs):
+                pass
+
+        pipeline = MinimalPipeline(
+            input_path=self.temp_input,
+            output_path=self.temp_output
+        )
+
+        # Mock config for OofDetector
+        config_dict = {
+            "model_path": "./models/oof_detection/oof_baserfdetr.pth",
+            "model_metadata": "./models/oof_detection/oof_baserfdetr_config.json",
+            "inferer_args": {
+                "patch_size": 560,
+                "overlap_ratio": 0.25,
+                "score_threshold": 0.5,
+                "nms_iou": 0.5,
+                "class_dict": {"oof": 0}
+            }
+        }
+
+        # Skip test if model files don't exist
+        if not os.path.exists(config_dict["model_path"]):
+            self.skipTest("OOF detector model files not available")
+
+        # Load OofDetector
+        try:
+            pipeline.load_model_fromdict("oof-detector", config_dict)
+            self.assertIsNotNone(pipeline.oof_detector)
+            self.assertIsNotNone(pipeline.oof_class_map)
+            self.assertEqual(pipeline.oof_class_map, {"oof": 0})
+        except Exception as e:
+            self.fail(f"OofDetector loading failed: {e}")
 
 
 if __name__ == "__main__":

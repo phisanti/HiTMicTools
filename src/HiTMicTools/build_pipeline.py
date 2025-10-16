@@ -6,6 +6,7 @@ from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
 from HiTMicTools.pipelines.ASCT_zaslavier import ASCT_zaslavier
+from HiTMicTools.pipelines.oof_detection import OOF_detection
 from HiTMicTools.utils import check_btrack
 
 
@@ -39,10 +40,14 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
         "ASCT_focusrestore": ASCT_focusRestoration,
         "toprak_nn": Toprak_updated_nn,
         "ASCT_zaslavier": ASCT_zaslavier,
+        "OOF_detection": OOF_detection,
     }
+    normalized_map = {key.lower(): value for key, value in pipeline_map.items()}
 
     pipeline_name = configs.pipeline_setup["name"]
-    analysis_pipeline = pipeline_map.get(pipeline_name)
+    analysis_pipeline = pipeline_map.get(pipeline_name) or normalized_map.get(
+        pipeline_name.lower()
+    )
     if analysis_pipeline is None:
         print(f"Invalid pipeline name: {pipeline_name}")
         sys.exit(1)
@@ -67,6 +72,7 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
             "bf_focus",
             "fl_focus",
             "pi_classification",
+            "oof_detector",
         ]:
             if model_key in configs:
                 analysis_wf.load_model_fromdict(model_key, configs[model_key])
