@@ -1,12 +1,12 @@
-import logging
 import warnings
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torchvision.ops import nms
+from torchvision.ops import box_iou
 
 from rfdetr import RFDETRSegPreview
 
@@ -48,10 +48,13 @@ class ScSegmenter(BaseModel):
     def __init__(
         self,
         model_path: str,
-        patch_size: int = 560,
+        patch_size: int = 256,
         overlap_ratio: float = 0.25,
         score_threshold: float = 0.5,
         nms_iou: float = 0.5,
+        temporal_buffer_size: int = 8,
+        spatial_batch_size: int = 32,
+        mask_threshold: float = 0.5,
         class_dict: Optional[dict] = None,
         model_type: str = "rfdetrsegpreview",
     ) -> None:
@@ -63,13 +66,19 @@ class ScSegmenter(BaseModel):
             patch_size: Square tile edge length passed to RF-DETR.
             overlap_ratio: Fractional overlap between adjacent tiles.
             score_threshold: Minimum confidence kept from per-tile detections.
-            nms_iou: IoU threshold for per-class non-maximum suppression.
+            nms_iou: IoU threshold for the cross-class non-maximum suppression.
+            temporal_buffer_size: Number of frames to process in GPU memory at once.
+            spatial_batch_size: Number of spatial tiles to process in parallel per batch.
+            mask_threshold: Binary threshold for converting predicted masks to instance labels.
             class_dict: Dictionary mapping class indices to names (e.g., {0: 'single-cell', 1: 'clump'}).
                 If provided, num_classes is derived from its length. If None, inferred from checkpoint.
             model_type: Identifier for the detector backbone to instantiate.
         """
         assert 0 <= overlap_ratio < 1, "overlap_ratio must be in [0, 1)."
         assert patch_size > 0, "patch_size must be positive."
+        assert temporal_buffer_size > 0, "temporal_buffer_size must be positive."
+        assert spatial_batch_size > 0, "spatial_batch_size must be positive."
+        assert 0 < mask_threshold < 1, "mask_threshold must be in (0, 1)."
 
         self.device = get_device()
         if self.device.type == "mps":
@@ -84,6 +93,9 @@ class ScSegmenter(BaseModel):
         self.overlap_ratio = overlap_ratio
         self.score_threshold = score_threshold
         self.nms_iou = nms_iou
+        self.temporal_buffer_size = temporal_buffer_size
+        self.spatial_batch_size = spatial_batch_size
+        self.mask_threshold = mask_threshold
         self.class_dict = class_dict
 
         if model_type.lower() != "rfdetrsegpreview":
@@ -121,8 +133,8 @@ class ScSegmenter(BaseModel):
         self,
         image: Union[np.ndarray, torch.Tensor],
         channel_index: int = 0,
-        temporal_buffer_size: int = 8,
-        spatial_batch_size: int = 32,
+        temporal_buffer_size: Optional[int] = None,
+        spatial_batch_size: Optional[int] = None,
         normalize_to_255: bool = True,
         score_threshold: Optional[float] = None,
         output_shape: str = "HW",
@@ -147,10 +159,12 @@ class ScSegmenter(BaseModel):
                 - [C, H, W]: Single frame multi-channel
             channel_index: Channel to segment (default: 0 for grayscale)
             temporal_buffer_size: Number of frames to keep in GPU memory at once.
-                Larger values increase GPU memory usage but reduce CPU↔GPU transfers.
+                If None, uses value from initialization. Larger values increase GPU
+                memory usage but reduce CPU↔GPU transfers.
                 Recommended: 4-8 for typical workloads, 2-4 for memory-constrained GPUs.
             spatial_batch_size: Number of spatial tiles to process in parallel.
-                Larger values improve GPU utilization but increase memory usage.
+                If None, uses value from initialization. Larger values improve GPU
+                utilization but increase memory usage.
                 Recommended: 16-32 for typical GPUs.
             normalize_to_255: Whether to min-max normalize the selected channel
                 to [0, 1] range. Set to False if image is already preprocessed.
@@ -196,15 +210,18 @@ class ScSegmenter(BaseModel):
             ...     spatial_batch_size=32
             ... )
         """
-        if spatial_batch_size <= 0:
+        # Use provided values or fall back to instance attributes
+        buffer_size = temporal_buffer_size if temporal_buffer_size is not None else self.temporal_buffer_size
+        batch_size = spatial_batch_size if spatial_batch_size is not None else self.spatial_batch_size
+        threshold = score_threshold if score_threshold is not None else self.score_threshold
+
+        # Validate parameters
+        if batch_size <= 0:
             raise ValueError("spatial_batch_size must be positive.")
-        if temporal_buffer_size <= 0:
+        if buffer_size <= 0:
             raise ValueError("temporal_buffer_size must be positive.")
         if output_shape not in ["HW", "WH"]:
             raise ValueError(f"output_shape must be 'HW' or 'WH', got '{output_shape}'")
-
-        # Use provided threshold or fall back to instance threshold
-        threshold = score_threshold if score_threshold is not None else self.score_threshold
 
         # 1. Prepare input - convert to [T, H, W] format
         if isinstance(image, np.ndarray):
@@ -219,8 +236,10 @@ class ScSegmenter(BaseModel):
         all_class_ids = []
         all_scores = []
 
-        for buffer_start in range(0, num_frames, temporal_buffer_size):
-            buffer_end = min(buffer_start + temporal_buffer_size, num_frames)
+        effective_buffer = min(max(1, num_frames), buffer_size)
+
+        for buffer_start in range(0, num_frames, effective_buffer):
+            buffer_end = min(buffer_start + effective_buffer, num_frames)
 
             # Load temporal buffer to GPU
             buffer_frames = image[buffer_start:buffer_end].to(self.device)
@@ -228,7 +247,7 @@ class ScSegmenter(BaseModel):
             # Process frames in the buffer with cross-frame tile batching
             buffer_results = self._process_temporal_buffer(
                 buffer_frames,
-                spatial_batch_size=spatial_batch_size,
+                spatial_batch_size=batch_size,
                 normalize_to_255=normalize_to_255,
                 score_threshold=threshold,
             )
@@ -242,14 +261,19 @@ class ScSegmenter(BaseModel):
 
             # Explicitly free buffer from GPU
             del buffer_frames
-            if self.device.type == 'cuda':
+            if self.device.type == "cuda":
                 torch.cuda.empty_cache()
 
         # 3. Format and return output
-        return self._format_output(
-            all_labeled_masks, all_bboxes, all_class_ids, all_scores,
-            is_single_frame, output_shape
+        formatted_output = self._format_output(
+            all_labeled_masks,
+            all_bboxes,
+            all_class_ids,
+            all_scores,
+            is_single_frame,
+            output_shape,
         )
+        return formatted_output
 
     def _reshape_input(
         self,
@@ -272,8 +296,8 @@ class ScSegmenter(BaseModel):
             ValueError: If input dimensions are not 2D, 3D, or 4D
             IndexError: If channel_index is out of bounds
         """
-        image = image.squeeze()
         is_single_frame = False
+        image = image.squeeze()
 
         if image.ndim == 2:
             # [H, W] → [1, 1, H, W]
@@ -378,6 +402,8 @@ class ScSegmenter(BaseModel):
             List of (labeled_mask, bboxes, class_ids, scores) tuples, one per frame
         """
         buffer_size = buffer_frames.shape[0]
+        if buffer_size == 0:
+            return []
 
         # 1. Prepare all frames and create tiles
         all_batches = []
@@ -390,14 +416,9 @@ class ScSegmenter(BaseModel):
             all_batches.append(batch)
 
         # 2. Interleave tiles from all frames for better batching
-        # Strategy: Process corresponding tiles from all frames together
-        # e.g., [tile_0_frame_0, tile_0_frame_1, tile_0_frame_2, ...]
-        # This allows the GPU to batch similar spatial regions across time
         mega_tiles = []
         tile_to_frame_map = []
-
         max_tiles = max(len(batch.tiles) for batch in all_batches)
-
         for tile_idx in range(max_tiles):
             for frame_idx, batch in enumerate(all_batches):
                 if tile_idx < len(batch.tiles):
@@ -406,24 +427,64 @@ class ScSegmenter(BaseModel):
 
         # 3. Process mega-batch with spatial batching
         all_detections = []
+        use_autocast = self.device.type == "cuda"
         for start in range(0, len(mega_tiles), spatial_batch_size):
-            batch_tiles = [tile.cpu() for tile in mega_tiles[start:start + spatial_batch_size]]
-            predictions = self.model.predict(batch_tiles, threshold=score_threshold)
+            batch_tiles = mega_tiles[start : start + spatial_batch_size]
+            if not batch_tiles:
+                continue
+
+            batch_tensor = torch.stack(batch_tiles, dim=0).to(
+                self.device, non_blocking=True
+            )
+            tile_min = batch_tensor.amin(dim=(-2, -1), keepdim=True)
+            tile_max = batch_tensor.amax(dim=(-2, -1), keepdim=True)
+            tile_range = (tile_max - tile_min).clamp_min(1e-6)
+            batch_tensor = (batch_tensor - tile_min) / tile_range
+
+            actual_count = batch_tensor.shape[0]
+            pad_count = max(0, spatial_batch_size - actual_count)
+            if pad_count > 0:
+                fill_value = batch_tensor.mean().item() if actual_count > 0 else 0.0
+                pad_tensor = torch.full(
+                    (pad_count, 3, self.tile_size, self.tile_size),
+                    fill_value,
+                    dtype=batch_tensor.dtype,
+                    device=batch_tensor.device,
+                )
+                batch_tensor = torch.cat([batch_tensor, pad_tensor], dim=0)
+
+            tensor_batch_list = [img for img in batch_tensor]
+            autocast_cm = (
+                torch.autocast(device_type="cuda", dtype=torch.float16)
+                if use_autocast
+                else nullcontext()
+            )
+            with autocast_cm:
+                predictions = self.model.predict(
+                    tensor_batch_list, threshold=score_threshold
+                )
             if not isinstance(predictions, list):
                 predictions = [predictions]
+
+            if pad_count > 0:
+                predictions = predictions[:actual_count]
+
             all_detections.extend(predictions)
 
         # 4. Demultiplex detections back to frames
-        # Create a list of detection lists, one per frame
         frame_detections = [[] for _ in range(buffer_size)]
-        for detection, (frame_idx, tile_idx) in zip(all_detections, tile_to_frame_map):
+        for detection, (frame_idx, _tile_idx) in zip(
+            all_detections, tile_to_frame_map
+        ):
             frame_detections[frame_idx].append(detection)
 
         # 5. Merge detections for each frame
         results = []
         for frame_idx, detections in enumerate(frame_detections):
             batch = all_batches[frame_idx]
-            labeled_mask, boxes, class_ids, scores = self._merge_detections(batch, detections)
+            labeled_mask, boxes, class_ids, scores = self._merge_detections(
+                batch, detections
+            )
             results.append((labeled_mask, boxes, class_ids, scores))
 
         return results
@@ -448,7 +509,6 @@ class ScSegmenter(BaseModel):
             frame = frame.unsqueeze(0)
 
         # Apply min-max normalization if requested
-        # This is typically needed for raw microscopy images but NOT for preprocessed images
         if normalize_to_255:
             frame = frame - frame.amin(dim=(-2, -1), keepdim=True)
             max_val = frame.amax(dim=(-2, -1), keepdim=True)
@@ -471,9 +531,6 @@ class ScSegmenter(BaseModel):
         padded_tensor = self._pad_if_needed(image_tensor)
         _, padded_h, padded_w = padded_tensor.shape
 
-        # DEBUG: Log padding information
-        print(f"[ScSegmenter] Original image: {height}x{width}, Padded: {padded_h}x{padded_w}")
-
         step = max(int(self.tile_size * (1 - self.overlap_ratio)), 1)
         x_positions = self._compute_positions(padded_w, step)
         y_positions = self._compute_positions(padded_h, step)
@@ -484,10 +541,9 @@ class ScSegmenter(BaseModel):
 
         for y in y_positions:
             for x in x_positions:
-                crop = padded_tensor[:, y : y + self.tile_size, x : x + self.tile_size]
-                # DEBUG: Check tile shape
-                if crop.shape[1] != self.tile_size or crop.shape[2] != self.tile_size:
-                    print(f"[ScSegmenter] WARNING: Tile at ({x}, {y}) has shape {crop.shape}, expected [{crop.shape[0]}, {self.tile_size}, {self.tile_size}]")
+                crop = padded_tensor[
+                    :, y : y + self.tile_size, x : x + self.tile_size
+                ]
                 tiles.append(crop)
 
                 valid_h = min(self.tile_size, height - y) if y < height else 0
@@ -522,7 +578,7 @@ class ScSegmenter(BaseModel):
             num_steps = (length - self.tile_size + step - 1) // step
             # Last position is at num_steps * step
             last_position = num_steps * step
-            # Required size is last_position + tile_size
+            # Required size is last_position + self.tile_size
             required_size = last_position + self.tile_size
             return required_size
 
@@ -535,11 +591,14 @@ class ScSegmenter(BaseModel):
         if pad_bottom == 0 and pad_right == 0:
             return tensor
 
-        # Calculate mean pixel value for padding
         mean_value = tensor.mean()
 
-        # Pad with mean value instead of zeros
-        return F.pad(tensor, (0, pad_right, 0, pad_bottom), mode='constant', value=mean_value.item())
+        return F.pad(
+            tensor,
+            (0, pad_right, 0, pad_bottom),
+            mode="constant",
+            value=mean_value.item(),
+        )
 
     def _compute_positions(self, length: int, step: int) -> List[int]:
         """Calculate tile starting positions along one dimension."""
@@ -550,29 +609,6 @@ class ScSegmenter(BaseModel):
         if positions[-1] != length - self.tile_size:
             positions.append(length - self.tile_size)
         return positions
-
-    def _infer_tiles(
-        self,
-        batch: SegmentationBatch,
-        batch_size: int,
-        threshold: float,
-    ) -> Sequence:
-        """Run RF-DETR inference on all tiles in batches."""
-        detections = []
-
-        for start in range(0, len(batch.tiles), batch_size):
-            batch_tiles = [
-                tile.cpu() for tile in batch.tiles[start : start + batch_size]
-            ]
-            predictions = self.model.predict(
-                batch_tiles, threshold=threshold
-            )
-            if not isinstance(predictions, list):
-                predictions = [predictions]
-
-            detections.extend(predictions)
-
-        return detections
 
     def _merge_detections(
         self,
@@ -591,6 +627,7 @@ class ScSegmenter(BaseModel):
         boxes: List[torch.Tensor] = []
         class_ids: List[torch.Tensor] = []
         scores: List[torch.Tensor] = []
+        areas: List[torch.Tensor] = []
         masks: List[torch.Tensor] = []
         offsets_list: List[Tuple[int, int]] = []
 
@@ -615,16 +652,26 @@ class ScSegmenter(BaseModel):
                 tile_boxes[:, 0::2] = tile_boxes[:, 0::2].clamp(max=max_x)
                 tile_boxes[:, 1::2] = tile_boxes[:, 1::2].clamp(max=max_y)
 
-            boxes.append(tile_boxes)
-            scores.append(tile_scores)
-            class_ids.append(tile_classes)
+            box_widths = (tile_boxes[:, 2] - tile_boxes[:, 0]).clamp(min=0)
+            box_heights = (tile_boxes[:, 3] - tile_boxes[:, 1]).clamp(min=0)
+            tile_box_areas = box_widths * box_heights
+            tile_area_values = tile_box_areas
 
-            # Store masks (if available) with their tile offsets
-            # Note: supervision uses 'mask' (singular) not 'masks' (plural)
-            if hasattr(det, 'mask') and det.mask is not None and len(det.mask) > 0:
+            if hasattr(det, "mask") and det.mask is not None and len(det.mask) > 0:
                 tile_masks = torch.from_numpy(det.mask)
                 masks.append(tile_masks)
                 offsets_list.extend([(offset_x, offset_y)] * len(tile_masks))
+
+                mask_binary = tile_masks > self.mask_threshold
+                mask_areas = mask_binary.flatten(1).sum(dim=1).float()
+                tile_area_values = torch.where(
+                    mask_areas > 0, mask_areas, tile_box_areas.float()
+                )
+
+            boxes.append(tile_boxes)
+            scores.append(tile_scores)
+            class_ids.append(tile_classes)
+            areas.append(tile_area_values.float())
 
         if not boxes:
             height, width = batch.image_shape
@@ -638,73 +685,77 @@ class ScSegmenter(BaseModel):
         boxes_tensor = torch.cat(boxes, dim=0).float()
         scores_tensor = torch.cat(scores, dim=0).float()
         classes_tensor = torch.cat(class_ids, dim=0).long()
+        areas_tensor = torch.cat(areas, dim=0).float()
 
-        # Clamp to image bounds
         height, width = batch.image_shape
         boxes_tensor[:, 0::2] = boxes_tensor[:, 0::2].clamp(0, width)
         boxes_tensor[:, 1::2] = boxes_tensor[:, 1::2].clamp(0, height)
 
-        # Apply per-class NMS to remove duplicates from overlapping tiles
-        #
-        # Why per-class NMS instead of batched_nms?
-        # - batched_nms expects a fixed number of detections per image (designed for batch processing)
-        # - Here we're processing tiles from a SINGLE image, where the number of detections varies
-        # - Using regular nms per class allows flexible detection counts while preventing
-        #   cross-class suppression (e.g., a high-confidence "single-cell" shouldn't suppress
-        #   a lower-confidence "clump" that happens to overlap spatially)
-        keep_indices_list = []
-        for class_id in torch.unique(classes_tensor):
-            class_mask = classes_tensor == class_id
-            class_boxes = boxes_tensor[class_mask]
-            class_scores = scores_tensor[class_mask]
-
-            # Get indices within this class that survive NMS
-            class_keep = nms(class_boxes, class_scores, self.nms_iou)
-
-            # Map back to original indices
-            original_indices = torch.where(class_mask)[0]
-            keep_indices_list.append(original_indices[class_keep])
-
-        # Combine all kept indices and sort them to maintain consistent ordering
-        if keep_indices_list:
-            keep_indices = torch.cat(keep_indices_list).sort()[0]
-        else:
-            keep_indices = torch.tensor([], dtype=torch.long)
+        keep_indices = self._cross_class_nms(
+            boxes_tensor, scores_tensor, areas_tensor
+        )
 
         boxes_np = boxes_tensor[keep_indices].numpy()
         classes_np = classes_tensor[keep_indices].numpy()
         scores_np = scores_tensor[keep_indices].numpy()
 
-        # Stitch masks into labeled mask
         if masks:
             masks_tensor = torch.cat(masks, dim=0)
             labeled_mask, mask_to_detection_map = self._stitch_masks(
                 masks_tensor, keep_indices, offsets_list, batch.image_shape
             )
 
-            # Filter class_ids and scores to match only the instances that made it into the labeled mask
-            # mask_to_detection_map gives us the index in the NMS-filtered detections for each mask instance
             if len(mask_to_detection_map) > 0:
                 classes_np = classes_np[mask_to_detection_map]
                 scores_np = scores_np[mask_to_detection_map]
                 boxes_np = boxes_np[mask_to_detection_map]
         else:
-            # If no masks available, create empty labeled mask
             labeled_mask = np.zeros(batch.image_shape, dtype=np.int32)
 
-        # Note: labeled_mask is in [H, W] format (standard image convention)
-        # The predict() method will transpose to [W, H] if output_shape="WH" is requested
-        # for HiTMicTools TSCXY convention compatibility
-
-        # DEBUG: Log detection counts
-        num_detections = len(boxes_np)
-        unique_instances = len(np.unique(labeled_mask)) - 1  # Subtract 1 to exclude background (0)
-        print(f"[ScSegmenter] Detections: {num_detections} bboxes, {unique_instances} unique mask instances")
-        if num_detections > 0:
-            print(f"[ScSegmenter] Score range: [{scores_np.min():.3f}, {scores_np.max():.3f}]")
-            print(f"[ScSegmenter] Class distribution: {np.bincount(classes_np.astype(int))}")
-
         return labeled_mask, boxes_np, classes_np, scores_np
+
+    def _cross_class_nms(
+        self, boxes: torch.Tensor, scores: torch.Tensor, areas: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Suppress overlapping detections across classes, preferring highest confidence.
+
+        Args:
+            boxes: [N, 4] tensor of XYXY boxes
+            scores: [N] tensor of confidence scores
+            areas: [N] tensor with instance areas (mask area preferred, bbox area fallback)
+
+        Returns:
+            Indices of detections kept after suppression.
+        """
+        num_instances = boxes.shape[0]
+        if num_instances == 0:
+            return torch.zeros((0,), dtype=torch.long, device=boxes.device)
+
+        # Prioritize higher-confidence detections, breaking ties with footprint size.
+        ordered_indices = sorted(
+            range(num_instances),
+            key=lambda idx: (scores[idx].item(), areas[idx].item()),
+            reverse=True,
+        )
+        order = torch.tensor(ordered_indices, dtype=torch.long, device=boxes.device)
+
+        keep: List[int] = []
+        while order.numel() > 0:
+            current = order[0]
+            keep.append(int(current))
+
+            if order.numel() == 1:
+                break
+
+            remaining = order[1:]
+            current_box = boxes[current].unsqueeze(0)
+            ious = box_iou(current_box, boxes[remaining]).squeeze(0)
+            suppress_mask = ious > self.nms_iou
+            remaining = remaining[~suppress_mask]
+            order = remaining
+
+        return torch.tensor(keep, dtype=torch.long, device=boxes.device)
 
     def _stitch_masks(
         self,
@@ -729,11 +780,9 @@ class ScSegmenter(BaseModel):
         height, width = image_shape
         labeled_mask = np.zeros((height, width), dtype=np.int32)
 
-        # Only keep masks that survived NMS
         kept_masks = masks[keep_indices]
         kept_offsets = [offsets[i] for i in keep_indices.cpu().numpy()]
 
-        # Track which detection index corresponds to each mask instance that gets written
         mask_to_detection_map = []
 
         for detection_idx, (mask, (offset_x, offset_y)) in enumerate(
@@ -742,31 +791,24 @@ class ScSegmenter(BaseModel):
             mask_np = mask.cpu().numpy()
             mask_h, mask_w = mask_np.shape
 
-            # Calculate the valid region within the full frame
             y_start = offset_y
             y_end = min(offset_y + mask_h, height)
             x_start = offset_x
             x_end = min(offset_x + mask_w, width)
 
-            # Crop mask to valid region
             mask_crop_h = y_end - y_start
             mask_crop_w = x_end - x_start
             mask_crop = mask_np[:mask_crop_h, :mask_crop_w]
 
-            # Convert to binary
-            binary_mask = mask_crop > 0.5
-
-            # Check if this mask actually adds any pixels (not completely overlapped)
+            binary_mask = mask_crop > self.mask_threshold
             roi = labeled_mask[y_start:y_end, x_start:x_end]
             new_pixels = binary_mask & (roi == 0)
 
             if new_pixels.any():
-                # Assign a new label ID for this instance
                 label_id = len(mask_to_detection_map) + 1
                 labeled_mask[y_start:y_end, x_start:x_end] = np.where(
                     new_pixels, label_id, roi
                 )
-                # Track which detection this label corresponds to
                 mask_to_detection_map.append(detection_idx)
 
         return labeled_mask, np.array(mask_to_detection_map, dtype=np.int32)
