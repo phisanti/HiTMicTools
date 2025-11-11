@@ -45,6 +45,9 @@ class ScSegmenter(BaseModel):
         class_dict: Mapping from class indices to class names
     """
 
+    # Class constant for per-tile normalization
+    NORMALIZATION_EPSILON = 1e-6  # Prevent division by zero in per-tile normalization
+
     def __init__(
         self,
         model_path: str,
@@ -53,7 +56,7 @@ class ScSegmenter(BaseModel):
         score_threshold: float = 0.5,
         nms_iou: float = 0.5,
         temporal_buffer_size: int = 8,
-        spatial_batch_size: int = 32,
+        batch_size: int = 32,
         mask_threshold: float = 0.5,
         class_dict: Optional[dict] = None,
         model_type: str = "rfdetrsegpreview",
@@ -68,7 +71,7 @@ class ScSegmenter(BaseModel):
             score_threshold: Minimum confidence kept from per-tile detections.
             nms_iou: IoU threshold for the cross-class non-maximum suppression.
             temporal_buffer_size: Number of frames to process in GPU memory at once.
-            spatial_batch_size: Number of spatial tiles to process in parallel per batch.
+            batch_size: Number of spatial tiles to process in parallel per batch.
             mask_threshold: Binary threshold for converting predicted masks to instance labels.
             class_dict: Dictionary mapping class indices to names (e.g., {0: 'single-cell', 1: 'clump'}).
                 If provided, num_classes is derived from its length. If None, inferred from checkpoint.
@@ -77,7 +80,7 @@ class ScSegmenter(BaseModel):
         assert 0 <= overlap_ratio < 1, "overlap_ratio must be in [0, 1)."
         assert patch_size > 0, "patch_size must be positive."
         assert temporal_buffer_size > 0, "temporal_buffer_size must be positive."
-        assert spatial_batch_size > 0, "spatial_batch_size must be positive."
+        assert batch_size > 0, "batch_size must be positive."
         assert 0 < mask_threshold < 1, "mask_threshold must be in (0, 1)."
 
         self.device = get_device()
@@ -94,7 +97,7 @@ class ScSegmenter(BaseModel):
         self.score_threshold = score_threshold
         self.nms_iou = nms_iou
         self.temporal_buffer_size = temporal_buffer_size
-        self.spatial_batch_size = spatial_batch_size
+        self.batch_size = batch_size
         self.mask_threshold = mask_threshold
         self.class_dict = class_dict
 
@@ -134,7 +137,7 @@ class ScSegmenter(BaseModel):
         image: Union[np.ndarray, torch.Tensor],
         channel_index: int = 0,
         temporal_buffer_size: Optional[int] = None,
-        spatial_batch_size: Optional[int] = None,
+        batch_size: Optional[int] = None,
         normalize_to_255: bool = True,
         score_threshold: Optional[float] = None,
         output_shape: str = "HW",
@@ -162,7 +165,7 @@ class ScSegmenter(BaseModel):
                 If None, uses value from initialization. Larger values increase GPU
                 memory usage but reduce CPU↔GPU transfers.
                 Recommended: 4-8 for typical workloads, 2-4 for memory-constrained GPUs.
-            spatial_batch_size: Number of spatial tiles to process in parallel.
+            batch_size: Number of spatial tiles to process in parallel.
                 If None, uses value from initialization. Larger values improve GPU
                 utilization but increase memory usage.
                 Recommended: 16-32 for typical GPUs.
@@ -190,7 +193,7 @@ class ScSegmenter(BaseModel):
             ...     frames,
             ...     channel_index=0,
             ...     temporal_buffer_size=8,
-            ...     spatial_batch_size=32,
+            ...     batch_size=32,
             ...     normalize_to_255=False,
             ...     output_shape="HW"  # Returns [T, H, W]
             ... )
@@ -207,17 +210,17 @@ class ScSegmenter(BaseModel):
             >>> mask, bboxes, classes, scores = segmenter.predict(
             ...     frame,
             ...     temporal_buffer_size=1,
-            ...     spatial_batch_size=32
+            ...     batch_size=32
             ... )
         """
         # Use provided values or fall back to instance attributes
         buffer_size = temporal_buffer_size if temporal_buffer_size is not None else self.temporal_buffer_size
-        batch_size = spatial_batch_size if spatial_batch_size is not None else self.spatial_batch_size
+        batch_size = batch_size if batch_size is not None else self.batch_size
         threshold = score_threshold if score_threshold is not None else self.score_threshold
 
         # Validate parameters
         if batch_size <= 0:
-            raise ValueError("spatial_batch_size must be positive.")
+            raise ValueError("batch_size must be positive.")
         if buffer_size <= 0:
             raise ValueError("temporal_buffer_size must be positive.")
         if output_shape not in ["HW", "WH"]:
@@ -247,7 +250,7 @@ class ScSegmenter(BaseModel):
             # Process frames in the buffer with cross-frame tile batching
             buffer_results = self._process_temporal_buffer(
                 buffer_frames,
-                spatial_batch_size=batch_size,
+                batch_size=batch_size,
                 normalize_to_255=normalize_to_255,
                 score_threshold=threshold,
             )
@@ -376,7 +379,7 @@ class ScSegmenter(BaseModel):
     def _process_temporal_buffer(
         self,
         buffer_frames: torch.Tensor,
-        spatial_batch_size: int,
+        batch_size: int,
         normalize_to_255: bool,
         score_threshold: float,
     ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
@@ -394,7 +397,7 @@ class ScSegmenter(BaseModel):
 
         Args:
             buffer_frames: [B, H, W] tensor of frames to process
-            spatial_batch_size: Number of tiles to process in parallel
+            batch_size: Number of tiles to process in parallel
             normalize_to_255: Whether to normalize frames
             score_threshold: Detection confidence threshold
 
@@ -428,54 +431,41 @@ class ScSegmenter(BaseModel):
         # 3. Process mega-batch with spatial batching
         all_detections = []
         use_autocast = self.device.type == "cuda"
-        for start in range(0, len(mega_tiles), spatial_batch_size):
-            batch_tiles = mega_tiles[start : start + spatial_batch_size]
-            if not batch_tiles:
+        autocast_cm = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if use_autocast
+            else nullcontext()
+        )
+
+        for start in range(0, len(mega_tiles), batch_size):
+            batch_tiles = mega_tiles[start : start + batch_size]
+
+            # Prepare batch with normalization and padding
+            tensor_batch_list, actual_count = self._prepare_batch(
+                batch_tiles, batch_size
+            )
+
+            if not tensor_batch_list:
                 continue
 
-            batch_tensor = torch.stack(batch_tiles, dim=0).to(
-                self.device, non_blocking=True
-            )
-            tile_min = batch_tensor.amin(dim=(-2, -1), keepdim=True)
-            tile_max = batch_tensor.amax(dim=(-2, -1), keepdim=True)
-            tile_range = (tile_max - tile_min).clamp_min(1e-6)
-            batch_tensor = (batch_tensor - tile_min) / tile_range
-
-            actual_count = batch_tensor.shape[0]
-            pad_count = max(0, spatial_batch_size - actual_count)
-            if pad_count > 0:
-                fill_value = batch_tensor.mean().item() if actual_count > 0 else 0.0
-                pad_tensor = torch.full(
-                    (pad_count, 3, self.tile_size, self.tile_size),
-                    fill_value,
-                    dtype=batch_tensor.dtype,
-                    device=batch_tensor.device,
-                )
-                batch_tensor = torch.cat([batch_tensor, pad_tensor], dim=0)
-
-            tensor_batch_list = [img for img in batch_tensor]
-            autocast_cm = (
-                torch.autocast(device_type="cuda", dtype=torch.float16)
-                if use_autocast
-                else nullcontext()
-            )
+            # Run inference with autocast
             with autocast_cm:
                 predictions = self.model.predict(
                     tensor_batch_list, threshold=score_threshold
                 )
+
             if not isinstance(predictions, list):
                 predictions = [predictions]
 
-            if pad_count > 0:
+            # Remove padding predictions
+            if actual_count < len(predictions):
                 predictions = predictions[:actual_count]
 
             all_detections.extend(predictions)
 
         # 4. Demultiplex detections back to frames
         frame_detections = [[] for _ in range(buffer_size)]
-        for detection, (frame_idx, _tile_idx) in zip(
-            all_detections, tile_to_frame_map
-        ):
+        for detection, (frame_idx, _) in zip(all_detections, tile_to_frame_map):
             frame_detections[frame_idx].append(detection)
 
         # 5. Merge detections for each frame
@@ -609,6 +599,60 @@ class ScSegmenter(BaseModel):
         if positions[-1] != length - self.tile_size:
             positions.append(length - self.tile_size)
         return positions
+
+    def _prepare_batch(
+        self,
+        tiles: List[torch.Tensor],
+        target_batch_size: int,
+    ) -> Tuple[List[torch.Tensor], int]:
+        """
+        Prepare a batch of tiles for RF-DETR inference with normalization and padding.
+
+        This method handles three preprocessing steps:
+        1. Stacks tiles into a batch tensor and transfers to device
+        2. Normalizes each tile independently (per-tile min-max normalization)
+        3. Pads batch to target_batch_size for consistent GPU utilization
+        4. Converts to list format required by RF-DETR API
+
+        Args:
+            tiles: List of tile tensors with shape [3, H, W]
+            target_batch_size: Desired batch size (will pad if needed)
+
+        Returns:
+            Tuple of:
+                - List of normalized tensors ready for RF-DETR inference
+                - Number of actual (non-padded) tiles in batch
+        """
+        if not tiles:
+            return [], 0
+
+        # Stack and transfer to device
+        batch_tensor = torch.stack(tiles, dim=0).to(self.device, non_blocking=True)
+
+        # Per-tile normalization (each tile normalized independently)
+        tile_min = batch_tensor.amin(dim=(-2, -1), keepdim=True)
+        tile_max = batch_tensor.amax(dim=(-2, -1), keepdim=True)
+        tile_range = (tile_max - tile_min).clamp_min(self.NORMALIZATION_EPSILON)
+        batch_tensor = (batch_tensor - tile_min) / tile_range
+
+        # Pad batch to target size if needed
+        actual_count = batch_tensor.shape[0]
+        pad_count = max(0, target_batch_size - actual_count)
+
+        if pad_count > 0:
+            fill_value = batch_tensor.mean().item() if actual_count > 0 else 0.0
+            pad_tensor = torch.full(
+                (pad_count, 3, self.tile_size, self.tile_size),
+                fill_value,
+                dtype=batch_tensor.dtype,
+                device=batch_tensor.device,
+            )
+            batch_tensor = torch.cat([batch_tensor, pad_tensor], dim=0)
+
+        # Convert to list format for RF-DETR
+        tensor_batch_list = [img for img in batch_tensor]
+
+        return tensor_batch_list, actual_count
 
     def _merge_detections(
         self,
