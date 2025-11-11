@@ -25,6 +25,7 @@ from HiTMicTools.model_components.segmentation_model import Segmentator
 from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
 from HiTMicTools.model_components.oof_detector import OofDetector
+from HiTMicTools.model_components.scsegmenter import ScSegmenter
 from HiTMicTools.tracking.cell_tracker import CellTracker
 from HiTMicTools.resource_management.sysutils import get_device, get_system_info
 from HiTMicTools.model_arch.nafnet import NAFNet
@@ -164,6 +165,7 @@ class BasePipeline(ABC):
             "fl_focus": "focus-restorer-fl",
             "pi_classification": "pi-classifier",
             "oof_detector": "oof-detector",
+            "sc_segmenter": "sc-segmenter",
         }
         model_type = alias_map.get(model_type, model_type)
 
@@ -209,6 +211,13 @@ class BasePipeline(ABC):
                 **config_dic.get("inferer_args", {}),
             )
             self.oof_class_map = config_dic.get("inferer_args", {}).get("class_dict")
+        elif model_type == "sc-segmenter":
+            self.sc_segmenter = ScSegmenter(
+                model_path,
+                model_type=model_configs.get("model_type", "rfdetrsegpreview"),
+                **config_dic.get("inferer_args", {}),
+            )
+            self.class_dict = config_dic.get("inferer_args", {}).get("class_dict")
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 
@@ -244,6 +253,7 @@ class BasePipeline(ABC):
             "cell_classifier": "cell-classifier",
             "pi_classification": "pi-classifier",
             "oof_detector": "oof-detector",
+            "sc_segmenter": "sc-segmenter",
         }
 
         try:
