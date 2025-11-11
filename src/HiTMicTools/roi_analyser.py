@@ -36,6 +36,55 @@ class RoiAnalyser:
 
         pass
 
+    @classmethod
+    def from_labeled_mask(
+        cls,
+        image: np.ndarray,
+        labeled_mask: np.ndarray,
+        stack_order: Tuple[str, str] = ("TSCXY", "TYX"),
+    ) -> "RoiAnalyser":
+        """
+        Create RoiAnalyser directly from a pre-labeled mask, skipping probability-based segmentation.
+
+        This constructor is useful when you have instance segmentation outputs (e.g., from RF-DETR-Segm)
+        that already provide labeled instances, bypassing the need for probability maps and
+        connected components analysis.
+
+        Args:
+            image: The original microscopy image with shape matching stack_order[0].
+            labeled_mask: Pre-labeled instance mask where each unique positive integer
+                represents a distinct ROI. Shape should match stack_order[1].
+            stack_order: Tuple of (image_order, mask_order) dimension specifications.
+                Defaults to ("TSCXY", "TYX") for time-series images with pre-labeled masks.
+
+        Returns:
+            RoiAnalyser instance ready for measurements, with labeled_mask already populated.
+
+        Example:
+            >>> # From RF-DETR-Segm output
+            >>> labeled_mask, _, _, _ = sc_segmenter.predict(image)
+            >>> analyser = RoiAnalyser.from_labeled_mask(image, labeled_mask)
+            >>> measurements = analyser.get_roi_measurements(target_channel=1)
+        """
+        instance = cls.__new__(cls)
+
+        # Adjust dimensions to expected format
+        instance.img = adjust_dimensions(image, stack_order[0])
+        adjusted_mask = adjust_dimensions(labeled_mask, stack_order[1])
+
+        # Set attributes
+        instance.labeled_mask = adjusted_mask
+        instance.stack_order = stack_order
+        instance.proba_map = None  # No probability map in this workflow
+
+        # Derive binary mask from labeled mask
+        instance.binary_mask = adjusted_mask > 0
+
+        # Calculate total number of ROIs across all frames
+        instance.total_rois = int(np.max(adjusted_mask))
+
+        return instance
+
     def create_binary_mask(self, threshold=0.5):
         """
         Create a binary mask from an image stack of probabilities.
