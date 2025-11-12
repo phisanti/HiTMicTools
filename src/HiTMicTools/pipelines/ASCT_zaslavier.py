@@ -70,6 +70,9 @@ class ASCT_zaslavier(BasePipeline):
         pi_classifier: Model for classifying PI positive/negative cells
     """
 
+    # Models required by this pipeline
+    required_models = {"bf_focus", "fl_focus", "segmentation", "cell_classifier", "pi_classification"}
+
     def analyse_image(
         self,
         file_i: str,

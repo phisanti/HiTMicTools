@@ -3,11 +3,7 @@ import sys
 
 # Load local modules
 from HiTMicTools.confreader import ConfReader
-from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
-from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
-from HiTMicTools.pipelines.ASCT_zaslavier import ASCT_zaslavier
-from HiTMicTools.pipelines.ASCT_scsegm import ASCT_scsegm
-from HiTMicTools.pipelines.oof_detection import OOF_detection
+from HiTMicTools.pipelines import get_pipeline
 from HiTMicTools.utils import check_btrack
 
 
@@ -37,21 +33,15 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
     extra_args = configs.get("extra", {})
     num_workers = configs.pipeline_setup.get("num_workers", {})
 
-    pipeline_map = {
-        "ASCT_focusrestore": ASCT_focusRestoration,
-        "ASCT_scsegm": ASCT_scsegm,
-        "toprak_nn": Toprak_updated_nn,
-        "ASCT_zaslavier": ASCT_zaslavier,
-        "OOF_detection": OOF_detection,
-    }
-    normalized_map = {key.lower(): value for key, value in pipeline_map.items()}
-
+    # Get pipeline class from registry
     pipeline_name = configs.pipeline_setup["name"]
-    analysis_pipeline = pipeline_map.get(pipeline_name) or normalized_map.get(
-        pipeline_name.lower()
-    )
-    if analysis_pipeline is None:
-        print(f"Invalid pipeline name: {pipeline_name}")
+    try:
+        pipeline_metadata = get_pipeline(pipeline_name)
+        analysis_pipeline = pipeline_metadata.cls
+        print(f"Pipeline: {pipeline_name}")
+        print(f"Required models: {', '.join(sorted(pipeline_metadata.required_models))}")
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
     analysis_wf = analysis_pipeline(

@@ -37,6 +37,11 @@ import psutil
 
 
 class Toprak_updated_nn(BasePipeline):
+    """Pipeline for Toprak analysis with neural network models."""
+
+    # Models required by this pipeline
+    required_models = {"segmentation", "cell_classifier", "pi_classification"}
+
     def analyse_image(
         self,
         file_i: str,

@@ -53,6 +53,9 @@ class ASCT_scsegm(BasePipeline):
         class_dict: Mapping from class indices to class names
     """
 
+    # Models required by this pipeline
+    required_models = {"bf_focus", "fl_focus", "sc_segmenter", "pi_classification"}
+
     def analyse_image(
         self,
         file_i: str,

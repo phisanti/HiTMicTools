@@ -187,23 +187,28 @@ class BasePipeline(ABC):
             self.image_segmentator = Segmentator(
                 model_path, model_graph=model_graph, **config_dic["inferer_args"]
             )
+            self.main_logger.info(f"Loaded model: segmentation (Monai UNet)")
         elif model_type == "cell-classifier":
             model_graph = FlexResNet(**model_configs["model_args"])
             self.object_classifier = CellClassifier(
                 model_path, model_graph=model_graph, **config_dic["model_args"]
             )
+            self.main_logger.info(f"Loaded model: cell_classifier (FlexResNet)")
         elif model_type == "focus-restorer-fl":
             model_graph = NAFNet(**model_configs["model_args"])
             self.fl_focus_restorer = FocusRestorer(
                 model_path, model_graph=model_graph, **config_dic["inferer_args"]
             )
+            self.main_logger.info(f"Loaded model: fl_focus (NAFNet)")
         elif model_type == "focus-restorer-bf":
             model_graph = NAFNet(**model_configs["model_args"])
             self.bf_focus_restorer = FocusRestorer(
                 model_path, model_graph=model_graph, **config_dic["inferer_args"]
             )
+            self.main_logger.info(f"Loaded model: bf_focus (NAFNet)")
         elif model_type == "pi-classifier":
             self.pi_classifier = PIClassifier(model_path)
+            self.main_logger.info(f"Loaded model: pi_classification (scikit-learn)")
         elif model_type == "oof-detector":
             self.oof_detector = OofDetector(
                 model_path,
@@ -211,6 +216,7 @@ class BasePipeline(ABC):
                 **config_dic.get("inferer_args", {}),
             )
             self.oof_class_map = config_dic.get("inferer_args", {}).get("class_dict")
+            self.main_logger.info(f"Loaded model: oof_detector (RF-DETR)")
         elif model_type == "sc-segmenter":
             self.sc_segmenter = ScSegmenter(
                 model_path,
@@ -218,10 +224,11 @@ class BasePipeline(ABC):
                 **config_dic.get("inferer_args", {}),
             )
             self.class_dict = config_dic.get("inferer_args", {}).get("class_dict")
+            self.main_logger.info(f"Loaded model: sc_segmenter (RF-DETR Segmenter)")
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 
-    def load_model_bundle(self, path_to_bundle: str) -> None:
+    def load_model_bundle(self, path_to_bundle: str, selective: bool = True) -> None:
         """
         Load models and configurations from a model bundle.
         The model bundle must be a zip file with the following structure:
@@ -234,6 +241,8 @@ class BasePipeline(ABC):
 
         Args:
             path_to_bundle (str): Path to the model bundle zip file.
+            selective (bool): If True, only load models required by this pipeline.
+                If False, load all models in the bundle. Defaults to True.
 
         Raises:
             FileNotFoundError: If the bundle path does not exist or is not a file.
@@ -244,6 +253,14 @@ class BasePipeline(ABC):
             raise FileNotFoundError(f"Model bundle not found at {path_to_bundle}")
         if not path_to_bundle.endswith(".zip"):
             raise ValueError("Model bundle must be a .zip file")
+
+        # Get pipeline's required models for selective loading
+        required_models = getattr(self, 'required_models', None)
+        if selective and required_models:
+            self.main_logger.info(
+                f"Selective loading enabled for {self.__class__.__name__}. "
+                f"Required models: {', '.join(sorted(required_models))}"
+            )
 
         # Define mapping between config keys and internal model types for proper loading
         model_type_mapping = {
@@ -275,9 +292,21 @@ class BasePipeline(ABC):
                     with open(config_path, "r") as config_file:
                         config = yaml.safe_load(config_file)
 
+                    # Track loaded and skipped models for summary
+                    loaded_models = []
+                    skipped_models = []
+
                     # Process each model in the bundle
                     for model_key, model_config in config.items():
                         if model_key in model_type_mapping:
+                            # Skip models not required by this pipeline
+                            if selective and required_models and model_key not in required_models:
+                                self.main_logger.info(
+                                    f"Skipping {model_key} (not required by {self.__class__.__name__})"
+                                )
+                                skipped_models.append(model_key)
+                                continue
+
                             model_type = model_type_mapping[model_key]
 
                             # Update paths to point to files in the temporary directory
@@ -294,7 +323,9 @@ class BasePipeline(ABC):
                                 )
 
                             # Load the model
+                            self.main_logger.info(f"Loading {model_key}...")
                             self.load_model_fromdict(model_type, model_config)
+                            loaded_models.append(model_key)
                         else:
                             self.main_logger.warning(
                                 f"Unknown model key in bundle: {model_key}"
@@ -306,9 +337,17 @@ class BasePipeline(ABC):
             self.main_logger.error(f"Error loading model bundle: {e}")
             raise
 
+        # Log summary of loaded models
         self.main_logger.info(
-            f"Successfully validated and loaded model bundle: {path_to_bundle}"
+            f"Successfully loaded model bundle: {path_to_bundle}"
         )
+        self.main_logger.info(
+            f"Models loaded ({len(loaded_models)}): {', '.join(loaded_models)}"
+        )
+        if skipped_models:
+            self.main_logger.info(
+                f"Models skipped ({len(skipped_models)}): {', '.join(skipped_models)}"
+            )
 
     def load_tracker(
         self, config_path: str, tracker_override_args: Optional[Dict[str, Any]] = None

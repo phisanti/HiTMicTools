@@ -22,6 +22,9 @@ class OOF_detection(BasePipeline):
     frame of a microscopy stack.
     """
 
+    # Models required by this pipeline
+    required_models = {"bf_focus", "fl_focus", "oof_detector", "segmentation", "cell_classifier"}
+
     def __init__(
         self,
         input_path: str,
