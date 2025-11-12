@@ -9,9 +9,9 @@ import torch
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.resource_management.reserveresource import ReserveResource
 from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
-from HiTMicTools.roi_analyser import RoiAnalyser
+from HiTMicTools.roianalysis import RoiAnalyser
 from HiTMicTools.utils import remove_file_extension
-from HiTMicTools.workflows import BasePipeline
+from HiTMicTools.pipelines.base_pipeline import BasePipeline
 from jetraw_tools.image_reader import ImageReader
 
 

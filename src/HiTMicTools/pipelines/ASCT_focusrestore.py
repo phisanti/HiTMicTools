@@ -13,13 +13,13 @@ from HiTMicTools.resource_management.sysutils import (
     get_device,
     )
 from HiTMicTools.resource_management.reserveresource import ReserveResource
-from HiTMicTools.workflows import BasePipeline
+from HiTMicTools.pipelines.base_pipeline import BasePipeline
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.img_processing.array_ops import convert_image
 from HiTMicTools.img_processing.img_ops import measure_background_intensity
 from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels
 from HiTMicTools.utils import get_timestamps, remove_file_extension
-from HiTMicTools.roi_analyser import RoiAnalyser
+from HiTMicTools.roianalysis import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 
 # TODO: Currently, I can use the cupy based ROI analyser, but performance is lagging.

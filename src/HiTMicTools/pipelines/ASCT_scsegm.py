@@ -13,13 +13,13 @@ from HiTMicTools.resource_management.sysutils import (
     get_device,
 )
 from HiTMicTools.resource_management.reserveresource import ReserveResource
-from HiTMicTools.workflows import BasePipeline
+from HiTMicTools.pipelines.base_pipeline import BasePipeline
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.img_processing.array_ops import convert_image
 from HiTMicTools.img_processing.img_ops import measure_background_intensity
 from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels
 from HiTMicTools.utils import get_timestamps, remove_file_extension
-from HiTMicTools.roi_analyser import RoiAnalyser
+from HiTMicTools.roianalysis import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 
 from jetraw_tools.image_reader import ImageReader
@@ -67,8 +67,6 @@ class ASCT_scsegm(BasePipeline):
         is_cuda = device == torch.device("cuda")
         movie_name = remove_file_extension(name)
         name = movie_name
-        # Desync analysis to avoid RAM/VRAM issues
-        sleep_time = random.uniform(0, 10)
         img_logger = self.setup_logger(self.output_path, movie_name)
         img_logger.info(f"Start analysis for {movie_name}")
         reference_channel = self.reference_channel
@@ -91,6 +89,7 @@ class ASCT_scsegm(BasePipeline):
             f"Image shape: {img.shape}, pixel size: {pixel_size} µm. Reshaped to (frames={nFrames}, channels={nChannels}, slices={nSlices}, x={size_x}, y={size_y})"
         )
         img = img.reshape(nFrames, nChannels, size_x, size_y)
+        # Subsetting for developing, testing and debugging
         nFrames = min(nFrames, 3)
         img = img[:nFrames]
         ip = ImagePreprocessor(img, stack_order="TCXY")

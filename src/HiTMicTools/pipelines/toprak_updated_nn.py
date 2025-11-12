@@ -6,13 +6,13 @@ import pandas as pd
 import numpy as np
 from typing import Optional
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
-from HiTMicTools.workflows import BasePipeline
+from HiTMicTools.pipelines.base_pipeline import BasePipeline
 from HiTMicTools.resource_management.sysutils import get_device, empty_gpu_cache
 
 from HiTMicTools.img_processing.img_ops import measure_background_intensity
 from HiTMicTools.img_processing.array_ops import convert_image
 from HiTMicTools.utils import remove_file_extension, get_timestamps
-from HiTMicTools.roi_analyser import RoiAnalyser
+from HiTMicTools.roianalysis import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 
 # TODO: Currently, I can use the cupy based ROI analyser, but performance is lagging.

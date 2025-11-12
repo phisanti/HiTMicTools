@@ -7,7 +7,7 @@ import shutil
 from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
-from HiTMicTools.workflows import BasePipeline
+from HiTMicTools.pipelines.base_pipeline import BasePipeline
 
 
 class TestPipelineConfigLoading(unittest.TestCase):
