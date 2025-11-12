@@ -93,8 +93,8 @@ class ASCT_scsegm(BasePipeline):
         )
         img = img.reshape(nFrames, nChannels, size_x, size_y)
         # Subsetting for developing, testing and debugging
-        nFrames = min(nFrames, 3)
-        img = img[:nFrames]
+        # nFrames = min(nFrames, 3)
+        # img = img[:nFrames]
         ip = ImagePreprocessor(img, stack_order="TCXY")
         img = np.zeros((1, 1, 1, 1))  # Remove img to save memory
 
