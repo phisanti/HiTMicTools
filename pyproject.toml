@@ -46,6 +46,7 @@ dependencies = [
     "jetraw-tools @ git+https://github.com/phisanti/jetraw_tools.git",
     "onnxruntime",
     "skl2onnx",
+    "btrack>=0.7.0",
 ]
 
 [project.urls]
