@@ -334,10 +334,6 @@ class ASCT_scsegm(BasePipeline):
                     for idx, class_name in enumerate(unique_class_names)
                 }
 
-            img_logger.info(
-                f"# DDEBUG: class→label map used for export: {class_value_map}"
-            )
-
             object_class_mask = map_predictions_to_labels(
                 img_analyser.labeled_mask[:, 0, 0],
                 object_classes,
