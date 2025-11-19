@@ -38,6 +38,17 @@ class CellTracker:
         config_dict: Optional[dict] = None,
         override_args: Optional[dict] = None,
     ):
+        """
+        Load tracker configuration either from disk or from an in-memory dictionary.
+
+        Args:
+            config_path: Path to a YAML/JSON config (or bundle) describing tracker parameters.
+            config_dict: Already-parsed configuration dictionary.
+            override_args: Optional overrides applied when loading from config_path.
+
+        Raises:
+            ValueError: If neither a config_path nor config_dict is provided.
+        """
         if config_dict is not None:
             self.config_path = None
             self.config = config_dict
