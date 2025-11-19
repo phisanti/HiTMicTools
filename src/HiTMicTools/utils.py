@@ -136,6 +136,7 @@ def update_config(
     def _recursive_update(
         target: Dict[str, Any], override: Dict[str, Any], path: str = ""
     ) -> None:
+        """Walk both dictionaries depth-first and override values in-place."""
         for key, value in override.items():
             current_path = f"{path}.{key}" if path else key
 
