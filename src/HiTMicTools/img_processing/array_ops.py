@@ -123,6 +123,7 @@ def convert_image(
     """
 
     def scale_array(arr):
+        """Normalize the provided array to the [0, 1] interval."""
         return (arr - arr.min()) / (arr.max() - arr.min())
 
     # Scale image to [0, 1] based on scale_mode

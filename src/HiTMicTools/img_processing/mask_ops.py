@@ -68,6 +68,7 @@ def map_predictions_to_labels(
 
     # Define a vectorized function to map labels to predictions
     def map_label_to_pred(x):
+        """Return the mapped prediction value for a given ROI label ID."""
         if x == 0:  # Background
             return background_value
         return label_to_pred.get(

@@ -36,6 +36,16 @@ class ImagePreprocessor:
         nchannels: int = 1,
         metadata: Optional[Dict[str, Union[float, str, int]]] = None,
     ):
+        """
+        Standardize stack dimensions and capture metadata used throughout preprocessing.
+
+        Args:
+            img: Input image stack in any supported dimension order.
+            pixel_size: Physical pixel size used for downstream measurements.
+            stack_order: String describing the layout of the supplied stack.
+            nchannels: Number of channels encoded in the stack.
+            metadata: Optional metadata dict containing overrides for the above values.
+        """
         img = adjust_dimensions(img, stack_order)
         self.img_original = img
         self.img = img
