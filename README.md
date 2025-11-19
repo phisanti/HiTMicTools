@@ -1,15 +1,19 @@
 # HiTMicTools
 
-A comprehensive toolkit for High-Throughput Microscopy Analysis developed by the Boeck Lab. This package provides tools and utilities for processing, analyzing, and managing large-scale microscopy data.
+[![Documentation Status](https://readthedocs.org/projects/hitmictools/badge/?version=latest)](https://hitmictools.readthedocs.io/en/latest/?badge=latest)
+
+A comprehensive toolkit for High-Throughput Microscopy Analysis developed by the Boeck Lab at University Hospital of Basel. This package provides deep learning-based pipelines for automated analysis of time-lapse microscopy data.
 
 ## 🎯 Features
 
-- Image preprocessing and enhancement
-- Region of Interest (ROI) analysis with both CPU and GPU support
-- Batch processing capabilities for large datasets
-- Configurable processing pipelines
-- Memory-efficient operations with logging
-- Command-line interface for easy automation
+- **Focus Restoration**: NAFNet-based deep learning models for brightfield and fluorescence channels
+- **Cell Segmentation**: MonaiUnet and RT-DETR instance segmentation
+- **Cell Classification**: Quality control and phenotype classification (single-cell, clump, noise, off-focus)
+- **Cell Tracking**: Bayesian multi-object tracking using btrack for lineage analysis (2D tracking)
+- **Smart Resource Management**: GPU/CPU memory management for multi-process environments
+- **Batch Processing**: Parallel processing with configurable workers
+- **SLURM Integration**: Cluster deployment for large-scale experiments
+- **Command-line Interface**: Easy automation and reproducible workflows
 
 ## 📋 Requirements
 HiTMicTools requires Python 3.9 or later and depends on the following packages:
@@ -74,113 +78,171 @@ git clone https://github.com/phisanti/HiTMicTools
 cd HiTMicTools
 pip install -e .
 ```
-If you plan to use the tracking functionalities within HiTMicTools, you will need to install `btrack`. Due to potential dependency conflicts with `ome-types` when installing `btrack` via `pip install btrack`, and issues with C++ library compilation when installing directly from git using `pip install git+btrack/btrack at main · quantumjot/btrack`, we recommend manual compilation and installation of `btrack` for full functionality.
+### Optional: Cell Tracking with btrack
 
-1.  **Clone the btrack repository:**
-    ```bash
-    git clone https://github.com/quantumjot/btrack.git
-    ```
-2.  **Navigate to the btrack directory:**
-    ```bash
-    cd btrack
-    ```
-3.  **Compile btrack:**
-    `btrack` includes a `build.sh` script to simplify the compilation process.
-    ```bash
-    bash build.sh
-    ```
-4.  **Install btrack:**
-    After successful compilation, install the package.
-    ```bash
-    pip install .
-    ```
-5.  **Clean up (optional):**
-    You can optionally clean up the build artifacts.
-    ```bash
-    python setup.py clean --all
-    ```
-    Navigate back to your previous directory if needed:
-    ```bash
-    cd ..
-    ```
+If you plan to use cell tracking functionalities, install btrack:
+
+**Recommended (btrack >= 0.7.0):**
+```bash
+pip install btrack>=0.7.0
+```
+
+**Alternative (manual compilation for btrack 0.6.6rc1):**
+```bash
+git clone https://github.com/quantumjot/btrack.git
+cd btrack
+git checkout v0.6.6rc1
+bash build.sh
+pip install .
+cd ..
+```
+
+**Note**: btrack < 0.6.6rc1 has dependency conflicts with pydantic and ome-types.
 ## 📖 Usage
 
-### Command Line Interface
+### Quick Start
 
-The package provides a CLI for common operations so that the image analysis can be automated and streamlined. The basic operation is to run an image analysis pipeline configured with a configuration file. 
+1. **Obtain a model collection** (contact the Boeck Lab or use your trained models)
+2. **Create a configuration file** (see example below)
+3. **Run the analysis**:
 
 ```bash
 # Basic usage
+hitmictools run --config config.yml
+
+# Process specific files only
+hitmictools run --config config.yml --worklist filelist.txt
+```
+
+### Command Line Interface
+
+```bash
+# View all available commands
 hitmictools --help
 
-# Run image analysis with a configuration file
-hitmictools run --config <config_file> --worklist <worklist_file> # This second argument is optional
-```
+# Run analysis pipeline
+hitmictools run --config <config_file> [--worklist <worklist_file>]
 
-Also, the package provides a command to split a folder of images into smaller batches. This can be useful for processing large datasets in smaller chunks.
-```bash
-# Process a batch of images
+# Split large datasets into batches
 hitmictools split-files --target-folder <folder> --n-blocks <num_blocks>
-```
 
-The last command is `generate-slurm`, which generates a SLURM script for running the analysis on a cluster. This command is particularly useful for large-scale processing tasks:
-```bash
-# Generate a bash script for SLURM
-generate-slurm --job-name 'testing' --file-blocks --n-blocks 2 --conda-env 'img_analysis'  --config-file './your_config.yml'    
+# Generate SLURM script for cluster processing
+hitmictools generate-slurm \
+    --job-name 'analysis' \
+    --file-blocks \
+    --n-blocks 10 \
+    --conda-env 'hitmictools' \
+    --config-file 'config.yml'
 ```
 
 ## 🔧 Configuration
 
-The toolkit uses configuration files to customize processing parameters. Create a YAML configuration file:
+### Modern Approach: Model Collections (Recommended)
+
+HiTMicTools now uses model collections - single ZIP files containing all required models:
 
 ```yaml
-# Example configuration for ASCT focus restoration pipeline
+input_data:
+  input_folder: "./data/experiment_001"
+  output_folder: "./results/experiment_001"
+  file_type: ".nd2"
+  export_labelled_masks: false
+  export_aligned_image: false
 
-# Pipeline type
-pipeline_type: ASCT_focusRestoration
+pipeline_setup:
+  name: "ASCT_focusrestore"
+  parallel_processing: true
+  num_workers: 3
+  reference_channel: 0
+  pi_channel: 1
+  focus_correction: true
+  align_frames: true
+  method: "basicpy_fl"
+  tracking: false
 
-# Input/Output settings
-input_dir: /path/to/input/directory
-output_dir: /path/to/output/directory
-file_type: nd2  # Supported formats: nd2, tif, tiff, etc.
+models:
+  model_collection: "./models/model_collection_tracking_20250529.zip"
+```
 
-# Image processing parameters
-reference_channel: 0  # Brightfield channel index for segmentation
-pi_channel: 1  # Fluorescence channel index for PI classification or other measurements
-align_frames: true  # Whether to align frames in the stack
-method: basicpy_fl  # Background removal method: 'standard', 'basicpy', or 'basicpy_fl'
+### With Cell Tracking
 
-# Model paths
-bf_focus_restorer:
-  model_path: /path/to/models/bf_focus_restoration_model.pth
-  model_type: monai  # Model architecture type
+```yaml
+pipeline_setup:
+  name: "ASCT_focusrestore"
+  tracking: true
+  align_frames: true  # Required for tracking
 
-fl_focus_restorer:
-  model_path: /path/to/models/fl_focus_restoration_model.pth
-  model_type: monai
+models:
+  model_collection: "./models/model_collection_tracking_20250529.zip"
 
-image_segmentator:
-  model_path: /path/to/models/segmentation_model.pth
-  model_type: monai
+tracking:
+  parameters_override:
+    hypothesis_model:
+      max_search_radius: 15.0
+      dist_thresh: 25.0
+      time_thresh: 2
+```
 
-object_classifier:
-  model_path: /path/to/models/object_classifier.onnx
-  model_type: onnx
-  
-# Optional PI classifier
-pi_classifier:
-  model_path: /path/to/models/pi_classifier.joblib
-  model_type: sklearn
+### Alternative: Individual Models
 
-# Processing options
-export_labeled_mask: true  # Export labeled mask images
-export_aligned_image: true  # Export aligned images
+For development or custom pipelines, you can specify models individually:
+
+```yaml
+models:
+  bf_focus:
+    model_path: "./models/bf_focus/model.pth"
+    model_metadata: "./models/bf_focus/config.json"
+
+  segmentation:
+    model_path: "./models/segmentation/model.pth"
+    model_metadata: "./models/segmentation/config.json"
+
+  cell_classifier:
+    model_path: "./models/classifier/model.onnx"
+    model_metadata: "./models/classifier/config.json"
+```
+
+**Note**: See the [full documentation](https://hitmictools.readthedocs.io/) for detailed configuration options.
+
+## 📚 Documentation
+
+Comprehensive documentation is available at **https://hitmictools.readthedocs.io/**
+
+Includes:
+- [Getting Started Guide](https://hitmictools.readthedocs.io/en/latest/launch_analysis.html)
+- [Cell Tracking Tutorial](https://hitmictools.readthedocs.io/en/latest/launch_analysis_with_tracking.html)
+- [SLURM Cluster Deployment](https://hitmictools.readthedocs.io/en/latest/using%20SLURM.html)
+- [Model Management](https://hitmictools.readthedocs.io/en/latest/models.html)
+
+## 🧪 Testing
+
+Run tests using the provided Makefile:
+
+```bash
+# Run all tests
+make test
+
+# Run with coverage
+make test-coverage
+
+# Run specific test suites
+make test-model
+make test-workflow
 ```
 
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## 📖 Citation
+
+If you use HiTMicTools in your research, please cite the btrack papers:
+
+**Cell Tracking:**
+- Ulicna, K., Vallardi, G., Charras, G., & Lowe, A. R. (2021). Automated Deep Lineage Tree Analysis Using a Bayesian Single Cell Tracking Approach. *Frontiers in Computer Science*, 3, 92. https://doi.org/10.3389/fcomp.2021.734559
+
+- Bove, A., Gradeci, D., Fujita, Y., Banerjee, S., Charras, G., & Lowe, A. R. (2017). Local cellular neighborhood controls proliferation in cell competition. *Molecular Biology of the Cell*, 28(23), 3215-3228. https://doi.org/10.1091/mbc.E17-06-0368
+
 ## 📝 License
 
-This project has been developed by the Boeck Lab at the Univeristy Hospital of Basel. The code released here is under the European Union Public Licence 1.2.
+This project has been developed by the Boeck Lab at University Hospital of Basel. The code released here is under the European Union Public Licence 1.2.
