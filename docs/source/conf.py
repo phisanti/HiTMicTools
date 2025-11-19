@@ -18,6 +18,13 @@ author = 'HiTMicTools Team'
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
+# Source file configuration
+source_suffix = {
+    '.rst': 'restructuredtext',
+    '.md': 'markdown',
+}
+root_doc = 'index'
+
 extensions = [
     'myst_parser',
     'sphinx.ext.autodoc',
