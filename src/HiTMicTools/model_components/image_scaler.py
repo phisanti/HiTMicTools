@@ -206,6 +206,7 @@ if __name__ == "__main__":
     test_image = torch.rand(2, 3, 64, 64) * 255
 
     def compute_error(original, reconstructed):
+        """Return a dictionary with MSE/MAE reconstruction errors."""
         mse = torch.mean((original - reconstructed) ** 2)
         mae = torch.mean(torch.abs(original - reconstructed))
         return {"MSE": mse.item(), "MAE": mae.item()}

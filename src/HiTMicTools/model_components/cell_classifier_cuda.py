@@ -51,6 +51,17 @@ class CellClassifier(BaseModel):
         classes: Optional[Dict[int, str]] = None,
         batch_size: int = 1024,
     ):
+        """
+        Initialize the CUDA variant of the classifier and load the serialized weights.
+
+        Args:
+            model_path: Filesystem path to the checkpoint.
+            model_graph: Callable/model factory used to instantiate the network.
+            min_size: Optional enforced ROI size prior to classification.
+            device: Torch device for inference (defaults to auto-detected GPU/CPU).
+            classes: Optional mapping from class indices to labels.
+            batch_size: Number of ROIs processed per forward pass.
+        """
         # Safety checks
         assert min_size is None or (isinstance(min_size, int) and min_size > 0), (
             "min_size must be None or a positive integer"

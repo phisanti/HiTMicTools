@@ -216,5 +216,6 @@ class BaseModel:
         return img
 
     def cleanup(self):
+        """Release cached tensors and trigger garbage collection."""
         gc.collect()
         empty_gpu_cache(self.device)

@@ -561,6 +561,7 @@ class ScSegmenter(BaseModel):
         # Calculate the required padded dimensions
         # We need to ensure that the last tile starting position + tile_size fits exactly
         def calc_padded_size(length: int) -> int:
+            """Return the padded dimension so sliding window steps land exactly on tiles."""
             if length <= self.tile_size:
                 return self.tile_size
 
