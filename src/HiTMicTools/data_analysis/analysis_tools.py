@@ -300,6 +300,7 @@ def rod_shape_coef(regionmask, intensity):
 
 
 def coords_centroid(coords):
+    """Return centroid coordinates as a Series indexed by stack dimension."""
     centroid = np.mean(coords, axis=0)
     return pd.Series(centroid, index=["slice", "y", "x"])
 
@@ -376,6 +377,16 @@ def laplacian(image):
 
 
 def variance_filter(image, kernel_size):
+    """
+    Compute the local variance of an image using a square averaging kernel.
+
+    Args:
+        image (np.ndarray): Input image (will be coerced to float32).
+        kernel_size (int): Size of the square window applied with cv2.blur.
+
+    Returns:
+        np.ndarray: Variance map with the same shape as the input image.
+    """
     # Convert the image to float32
     image = np.float32(image)
 

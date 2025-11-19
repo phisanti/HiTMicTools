@@ -40,11 +40,13 @@ def roi_std_dev(regionmask, intensity):
 
 
 def coords_centroid(coords):
+    """Return centroid coordinates encoded as slice/y/x pandas Series."""
     centroid = cp.mean(coords, axis=0)
     return pd.Series(centroid, index=["slice", "y", "x"])
 
 
 def convert_to_list_and_dump(row):
+    """Serialize GPU coordinate arrays into JSON strings for downstream storage."""
     return json.dumps(row.tolist())
 
 
@@ -94,7 +96,17 @@ def stack_indexer_ingpu(
 
 
 class RoiAnalyser:
+    """GPU-backed ROI analyser mirroring the CPU version but operating on CuPy arrays."""
+
     def __init__(self, image, probability_map, stack_order=("TSCXY", "TXY")):
+        """
+        Normalize and move input stacks onto the GPU for future ROI measurements.
+
+        Args:
+            image (np.ndarray): Raw microscopy stack.
+            probability_map (np.ndarray): Probability or mask stack aligned with the image.
+            stack_order (Tuple[str, str]): Dimension order strings for image/mask volumes.
+        """
         image = adjust_dimensions(image, stack_order[0])
         probability_map = adjust_dimensions(probability_map, stack_order[1])
 

@@ -17,16 +17,28 @@ from pandas import DataFrame, Series
 
 
 def coords_centroid(coords):
+    """Return centroid coordinates as slice/y/x pandas Series."""
     centroid = np.mean(coords, axis=0)
     return pd.Series(centroid, index=["slice", "y", "x"])
 
 
 def convert_to_list_and_dump(row):
+    """Serialize numpy arrays of coordinates into JSON strings."""
     return json.dumps(row.tolist())
 
 
 class RoiAnalyser:
+    """Measure properties of probability maps or labeled masks representing regions of interest."""
+
     def __init__(self, image, probability_map, stack_order=("TSCXY", "TXY")):
+        """
+        Normalize dimensionality of image inputs and store tensors for later measurements.
+
+        Args:
+            image (np.ndarray): Raw microscopy stack.
+            probability_map (np.ndarray): Map of per-pixel probabilities or masks.
+            stack_order (Tuple[str, str]): Dimension order for image and mask tensors.
+        """
         image = adjust_dimensions(image, stack_order[0])
         probability_map = adjust_dimensions(probability_map, stack_order[1])
 
