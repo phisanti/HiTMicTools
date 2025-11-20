@@ -30,7 +30,7 @@ setup(
         "tifffile",
         "jax==0.4.23",
         "jaxlib==0.4.23",
-        "basicpy @ git+https://github.com/yuliu96/BaSiCPy.git",
+        "basicpy @ git+https://github.com/yuliu96/BaSiCPy_torch.git",
         "jetraw-tools @ git+https://github.com/phisanti/jetraw_tools.git",
         "onnxruntime",
         "skl2onnx",

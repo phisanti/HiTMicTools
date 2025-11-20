@@ -55,7 +55,7 @@ cucim
 ```
 Moreover, it is also necessary to install the jetraw-tools and basicpy package from the source:
 ```bash
-   pip install git+https://github.com/yuliu96/BaSiCPy.git
+   pip install git+https://github.com/yuliu96/BaSiCPy_torch.git
    pip install git+https://github.com/phisanti/jetraw_tools.git
 ```
 

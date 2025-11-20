@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import inspect
 from typing import Union, List, Optional, Dict, Tuple
 from templatematchingpy import StackAligner, AlignmentConfig
 from basicpy import BaSiC
@@ -63,6 +64,26 @@ class ImagePreprocessor:
             self.pixel_size = metadata["pixel_size"]
             self.stack_order = metadata["stack_order"]
             self.nchannels = metadata["nchannels"]
+
+        # Detect BaSiCPy API version for backwards compatibility
+        # See: https://github.com/yuliu96/BaSiCPy vs https://github.com/yuliu96/BaSiCPy_torch
+        self._basicpy_uses_is_timelapse = self._detect_basicpy_api()
+
+    @staticmethod
+    def _detect_basicpy_api() -> bool:
+        """
+        Detect which BaSiCPy API version is installed by inspecting the transform signature.
+
+        This method ensures backwards compatibility between the original BaSiCPy and BaSiCPy_torch.
+        The two libraries have a breaking change in the BaSiC.transform() method:
+        - Original BaSiCPy uses parameter name: 'timelapse'
+        - BaSiCPy_torch uses parameter name: 'is_timelapse'
+
+        Returns:
+            bool: True if using new API (is_timelapse parameter), False if using old API (timelapse parameter).
+        """
+        sig = inspect.signature(BaSiC.transform)
+        return "is_timelapse" in sig.parameters
 
     def align_image(
         self,
@@ -228,6 +249,12 @@ class ImagePreprocessor:
         """
         Clear the image background using the basicpy method.
 
+        This method supports both original BaSiCPy and BaSiCPy_torch libraries.
+        Due to a breaking API change between these versions, the transform() method
+        parameter changed from 'timelapse' to 'is_timelapse'. This implementation
+        automatically detects which version is installed and uses the appropriate
+        parameter name.
+
         Args:
             nframes (Union[int, range, List[int]]): Frame indices to process.
             nslices (Union[int, range, List[int]]): Slice indices to process.
@@ -249,7 +276,13 @@ class ImagePreprocessor:
 
         basic = BaSiC(**kwargs)
         basic.fit(img_to_transform)
-        images_transformed = basic.transform(img_to_transform, timelapse=is_timelapse)
+
+        # Use appropriate parameter name based on detected BaSiCPy version
+        if self._basicpy_uses_is_timelapse:
+            images_transformed = basic.transform(img_to_transform, is_timelapse=is_timelapse)
+        else:
+            images_transformed = basic.transform(img_to_transform, timelapse=is_timelapse)
+
         self.img[nframes, nslices, nchannels] = images_transformed
 
     def _cv2_clear_image_background(
