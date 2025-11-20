@@ -220,8 +220,10 @@ class OOF_detection(BasePipeline):
         analyser: RoiAnalyser,
         batch_size: int = 5,
     ) -> Tuple[List[str], List[int]]:
-        labeled_mask = analyser.labeled_mask[:, 0, 0]
-        image = analyser.img[:, 0, 0]
+        labeled_mask = analyser.get(
+            "labels", index=(slice(None), 0, 0), to_numpy=True
+        )
+        image = analyser.get("image", index=(slice(None), 0, 0), to_numpy=True)
         total_frames = labeled_mask.shape[0]
 
         all_classes: List[str] = []

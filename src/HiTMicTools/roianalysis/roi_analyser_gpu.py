@@ -2,7 +2,7 @@ import itertools
 
 # Standard library imports
 import json
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Union
 
 # Third-party library imports
 import cupy as cp
@@ -13,16 +13,12 @@ from cucim.skimage.measure import regionprops_table
 import cudf
 
 # Local imports
-from HiTMicTools.img_processing.array_ops import adjust_dimensions, stack_indexer
+from HiTMicTools.img_processing.array_ops import adjust_dimensions
 from HiTMicTools.roianalysis.roi_utils import (
     to_cupy_array,
     compute_label_offsets,
     apply_label_offsets,
 )
-
-# Type hints
-from numpy.typing import NDArray
-from pandas import DataFrame, Series
 
 
 def roi_skewness(regionmask, intensity):
@@ -53,8 +49,18 @@ def coords_centroid(coords):
 
 
 def convert_to_list_and_dump(row):
-    """Serialize GPU coordinate arrays into JSON strings for downstream storage."""
-    return json.dumps(row.tolist())
+    """Serialize GPU coordinate arrays into JSON strings for downstream storage.
+
+    Handles both CuPy arrays (GPU) and NumPy arrays (CPU) by explicitly converting
+    CuPy arrays to host memory before serialization to avoid implicit conversion errors.
+    """
+    # Check if it's a CuPy array and convert to NumPy first
+    if hasattr(row, '__cuda_array_interface__'):
+        # CuPy array - use .get() to explicitly convert to NumPy
+        return json.dumps(row.get().tolist())
+    else:
+        # Already a NumPy array or list
+        return json.dumps(row.tolist())
 
 
 def stack_indexer_ingpu(
@@ -129,6 +135,103 @@ class RoiAnalyser:
         self.img = to_cupy_array(image)
         self.proba_map = to_cupy_array(probability_map)
         self.stack_order = stack_order
+
+    def get(self, name: str, index=None, to_numpy: bool = True):
+        """
+        Retrieve stored arrays with optional indexing and NumPy conversion.
+
+        Args:
+            name: Data key to fetch ('image', 'probability', 'binary', 'labels').
+            index: Optional slice/tuple/list used to index into the array.
+            to_numpy: Convert CuPy arrays to NumPy before returning.
+
+        Returns:
+            Array view or copy depending on the backend.
+
+        Raises:
+            ValueError: If the requested data key is unknown or not available.
+        """
+        data_map = {
+            "image": self.img,
+            "probability": self.proba_map,
+            "probability_map": self.proba_map,
+            "binary": getattr(self, "binary_mask", None),
+            "binary_mask": getattr(self, "binary_mask", None),
+            "labels": getattr(self, "labeled_mask", None),
+            "labeled_mask": getattr(self, "labeled_mask", None),
+        }
+
+        if name not in data_map:
+            raise ValueError(
+                f"Unsupported data key '{name}'. "
+                "Use one of ['image', 'probability', 'probability_map', 'binary', 'binary_mask', 'labels', 'labeled_mask']."
+            )
+
+        arr = data_map[name]
+        if arr is None:
+            raise ValueError(f"Data '{name}' is not available on this analyser.")
+
+        if index is not None:
+            arr = arr[tuple(index) if isinstance(index, (list, tuple)) else index]
+
+        if to_numpy and hasattr(arr, "__cuda_array_interface__"):
+            arr = arr.get()
+
+        return arr
+
+    @classmethod
+    def from_labeled_mask(
+        cls,
+        image,
+        labeled_mask,
+        stack_order=("TSCXY", "TYX"),
+    ):
+        """
+        Create RoiAnalyser directly from a pre-labeled mask, skipping probability-based segmentation.
+
+        This constructor is useful when you have instance segmentation outputs (e.g., from RF-DETR-Segm)
+        that already provide labeled instances, bypassing the need for probability maps and
+        connected components analysis.
+
+        Supports zero-copy conversion from PyTorch CUDA tensors via DLPack protocol.
+
+        Args:
+            image: The original microscopy image with shape matching stack_order[0].
+                Can be NumPy array, PyTorch tensor (CPU/GPU), or CuPy array.
+            labeled_mask: Pre-labeled instance mask where each unique positive integer
+                represents a distinct ROI. Shape should match stack_order[1].
+                Can be NumPy array, PyTorch tensor (CPU/GPU), or CuPy array.
+            stack_order: Tuple of (image_order, mask_order) dimension specifications.
+                Defaults to ("TSCXY", "TYX") for time-series images with pre-labeled masks.
+
+        Returns:
+            RoiAnalyser instance ready for measurements, with labeled_mask already populated.
+
+        Example:
+            >>> # From RF-DETR-Segm output (PyTorch tensors on GPU)
+            >>> labeled_mask, _, _, _ = sc_segmenter.predict(image)
+            >>> analyser = RoiAnalyser.from_labeled_mask(image, labeled_mask)
+            >>> measurements = analyser.get_roi_measurements(target_channel=1)
+        """
+        instance = cls.__new__(cls)
+
+        # Adjust dimensions to expected format
+        adjusted_image = adjust_dimensions(image, stack_order[0])
+        adjusted_mask = adjust_dimensions(labeled_mask, stack_order[1])
+
+        # Convert to CuPy with zero-copy if possible
+        instance.img = to_cupy_array(adjusted_image)
+        instance.labeled_mask = to_cupy_array(adjusted_mask)
+        instance.stack_order = stack_order
+        instance.proba_map = None  # No probability map in this workflow
+
+        # Derive binary mask from labeled mask
+        instance.binary_mask = instance.labeled_mask > 0
+
+        # Calculate total number of ROIs across all frames
+        instance.total_rois = int(cp.max(instance.labeled_mask))
+
+        return instance
 
     def create_binary_mask(self, threshold=0.5):
         """
@@ -325,13 +428,15 @@ class RoiAnalyser:
         # Vectorized metadata addition (single GPU operation instead of T operations)
         # Construct frame indices using repeat: [0,0,0, 1,1, 2,2,2,2, ...]
         # where each frame index repeats for the number of ROIs in that frame
-        # Note: cp.repeat() requires repeats as a list/tuple, not a CuPy array
+        # Note: Convert frame_roi_counts to a Python list to avoid CuPy conversion issues
+        frame_roi_counts_list = [int(count) for count in frame_roi_counts]
         frame_indices = cp.repeat(
-            cp.arange(len(frame_roi_counts), dtype=cp.int32),
-            frame_roi_counts  # Use Python list directly
+            cp.arange(len(frame_roi_counts_list), dtype=cp.int32),
+            frame_roi_counts_list
         )
 
         # Add metadata columns in vectorized fashion (GPU-accelerated)
+        # Convert CuPy array to cuDF Series explicitly to avoid implicit conversion errors
         all_roi_properties_cudf["frame"] = cudf.Series(frame_indices)
         all_roi_properties_cudf["slice"] = target_channel   # Broadcast scalar
         all_roi_properties_cudf["channel"] = target_slice   # Broadcast scalar

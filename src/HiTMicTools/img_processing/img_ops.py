@@ -202,14 +202,27 @@ def measure_background_intensity(
 ) -> pd.DataFrame:
     """Measure background fluorescence intensity excluding foreground objects.
 
+    Works with both NumPy and CuPy arrays (GPU-accelerated when CuPy arrays provided).
+
     Args:
-        img (np.ndarray): Image stack [frame, slice, channel, x, y].
-        mask (np.ndarray): Binary mask with objects as pixels and background as 0 [frame, slice, x, y].
+        img (np.ndarray or cp.ndarray): Image stack [frame, slice, channel, x, y].
+        mask (np.ndarray or cp.ndarray): Binary mask with objects as pixels and background as 0 [frame, slice, x, y].
         target_channel (int): Channel to measure background intensity.
+        quantile (float): Quantile to compute (default 0.10 = 10th percentile).
 
     Returns:
-        pd.DataFrame: DataFrame with background intensity (quantile 10) per frame.
+        pd.DataFrame: DataFrame with background intensity (quantile) per frame.
     """
+    # Detect array module (numpy or cupy)
+    if hasattr(img, '__cuda_array_interface__'):
+        import cupy as cp
+        xp = cp
+        # Use cupy's nanquantile if available, otherwise convert to numpy
+        use_cupy = True
+    else:
+        xp = np
+        use_cupy = False
+
     bck_intensities = []
     frames = []
     for frame in range(img.shape[0]):
@@ -218,10 +231,16 @@ def measure_background_intensity(
         frame_img = img[frame, 0, target_channel]
 
         # Apply mask to the image: set object pixels to NaN
-        masked_img = np.where(frame_mask == 0, frame_img, np.nan)
+        masked_img = xp.where(frame_mask == 0, frame_img, xp.nan)
 
-        # Calculate the 10th percentile of the background intensity
-        bck_intensity = np.nanquantile(masked_img, quantile)
+        # Calculate the quantile of the background intensity
+        if use_cupy:
+            # CuPy doesn't have nanquantile, so convert to numpy for this operation
+            masked_img_cpu = cp.asnumpy(masked_img)
+            bck_intensity = float(np.nanquantile(masked_img_cpu, quantile))
+        else:
+            bck_intensity = float(np.nanquantile(masked_img, quantile))
+
         bck_intensities.append(bck_intensity)
         frames.append(frame)
 

@@ -232,7 +232,9 @@ class ASCT_scsegm(BasePipeline):
         img_logger.info("4 - Starting measurements", show_memory=True)
         img_logger.info("4.1 - Extracting background fluorescence intensity")
         bck_fl = measure_background_intensity(
-            img_analyser.img, img_analyser.labeled_mask, target_channel=pi_channel
+            img_analyser.get("image", to_numpy=False),
+            img_analyser.get("labels", to_numpy=False),
+            target_channel=pi_channel,
         )
 
         fl_prop = [
@@ -334,8 +336,11 @@ class ASCT_scsegm(BasePipeline):
                     for idx, class_name in enumerate(unique_class_names)
                 }
 
+            labeled_mask_slice = img_analyser.get(
+                "labels", index=(slice(None), 0, 0), to_numpy=True
+            )
             object_class_mask = map_predictions_to_labels(
-                img_analyser.labeled_mask[:, 0, 0],
+                labeled_mask_slice,
                 object_classes,
                 fl_measurements["label"].tolist(),
                 value_map=class_value_map,
@@ -345,7 +350,7 @@ class ASCT_scsegm(BasePipeline):
             if self.pi_classifier is not None:
                 # Map PI classes to the labeled mask
                 pi_class_mask = map_predictions_to_labels(
-                    img_analyser.labeled_mask[:, 0, 0],
+                    labeled_mask_slice,
                     fl_measurements["pi_class"].tolist(),
                     fl_measurements["label"].tolist(),
                     value_map={"piPOS": 1, "piNEG": 2},
@@ -372,8 +377,12 @@ class ASCT_scsegm(BasePipeline):
                 metadata={"axes": axes},
             )
             img_logger.info(log_msg)
+
         if export_aligned_image:
-            image_8bit = convert_image(img_analyser.img, np.uint8)
+            image_8bit = convert_image(
+                img_analyser.get("image", to_numpy=True),
+                np.uint8,
+            )
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
 
         img_logger.info(f"Analysis completed for {movie_name}", show_memory=True)

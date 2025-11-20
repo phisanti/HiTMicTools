@@ -245,7 +245,9 @@ class ASCT_zaslavier(BasePipeline):
         img_logger.info("4 - Starting measurements", show_memory=True)
         img_logger.info("4.1 - Extracting background fluorescence intensity")
         bck_fl = measure_background_intensity(
-            img_analyser.img, img_analyser.labeled_mask, target_channel=pi_channel
+            img_analyser.get("image", to_numpy=False),
+            img_analyser.get("labels", to_numpy=False),
+            target_channel=pi_channel,
         )
 
         fl_prop = [
@@ -275,8 +277,8 @@ class ASCT_zaslavier(BasePipeline):
                 # Measure GFP background intensity first
                 img_logger.info("4.2b - Extracting GFP background intensity")
                 gfp_bck = measure_background_intensity(
-                    img_analyser.img,
-                    img_analyser.labeled_mask,
+                    img_analyser.get("image", to_numpy=False),
+                    img_analyser.get("labels", to_numpy=False),
                     target_channel=gfp_channel,
                 )
                 gfp_bck = gfp_bck.rename(columns={"background": "gfp_background"})
@@ -372,10 +374,13 @@ class ASCT_zaslavier(BasePipeline):
                 "off-focus": 3,
                 "joint-cell": 4,
             }
+            label_slice = img_analyser.get(
+                "labels", index=(slice(None), 0, 0), to_numpy=True
+            )
 
             # Map object classes to the labeled mask
             object_class_mask = map_predictions_to_labels(
-                img_analyser.labeled_mask[:, 0, 0],
+                label_slice,
                 object_classes,
                 labels,
                 value_map={
@@ -388,7 +393,7 @@ class ASCT_zaslavier(BasePipeline):
             if self.pi_classifier is not None:
                 # Map PI classes to the labeled mask
                 pi_class_mask = map_predictions_to_labels(
-                    img_analyser.labeled_mask[:, 0, 0],
+                    label_slice,
                     fl_measurements["pi_class"].tolist(),
                     fl_measurements["label"].tolist(),
                     value_map={"piPOS": 1, "piNEG": 2},
@@ -416,7 +421,10 @@ class ASCT_zaslavier(BasePipeline):
             )
             img_logger.info(log_msg)
         if export_aligned_image:
-            image_8bit = convert_image(img_analyser.img, np.uint8)
+            image_8bit = convert_image(
+                img_analyser.get("image", to_numpy=True),
+                np.uint8,
+            )
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
 
         img_logger.info(f"Analysis completed for {movie_name}", show_memory=True)
@@ -430,8 +438,10 @@ class ASCT_zaslavier(BasePipeline):
         return name
 
     def batch_classify_rois(self, img_analyser, batch_size=5):
-        labeled_mask = img_analyser.labeled_mask[:, 0, 0]  # .get()
-        img = img_analyser.img[:, 0, 0]  # .get()
+        labeled_mask = img_analyser.get(
+            "labels", index=(slice(None), 0, 0), to_numpy=True
+        )
+        img = img_analyser.get("image", index=(slice(None), 0, 0), to_numpy=True)
 
         n_frames = labeled_mask.shape[0]
         all_object_classes = []

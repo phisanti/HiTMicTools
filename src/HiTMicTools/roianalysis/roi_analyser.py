@@ -53,6 +53,49 @@ class RoiAnalyser:
 
         pass
 
+    def get(self, name: str, index=None, to_numpy: bool = True):
+        """
+        Retrieve stored arrays with optional indexing and NumPy conversion.
+
+        Args:
+            name: Data key to fetch ('image', 'probability', 'binary', 'labels').
+            index: Optional slice/tuple/list used to index into the array.
+            to_numpy: Convert GPU-backed arrays to NumPy before returning.
+
+        Returns:
+            Array view or copy depending on the backend.
+
+        Raises:
+            ValueError: If the requested data key is unknown or not available.
+        """
+        data_map = {
+            "image": self.img,
+            "probability": self.proba_map,
+            "probability_map": self.proba_map,
+            "binary": getattr(self, "binary_mask", None),
+            "binary_mask": getattr(self, "binary_mask", None),
+            "labels": getattr(self, "labeled_mask", None),
+            "labeled_mask": getattr(self, "labeled_mask", None),
+        }
+
+        if name not in data_map:
+            raise ValueError(
+                f"Unsupported data key '{name}'. "
+                "Use one of ['image', 'probability', 'probability_map', 'binary', 'binary_mask', 'labels', 'labeled_mask']."
+            )
+
+        arr = data_map[name]
+        if arr is None:
+            raise ValueError(f"Data '{name}' is not available on this analyser.")
+
+        if index is not None:
+            arr = arr[tuple(index) if isinstance(index, (list, tuple)) else index]
+
+        if to_numpy and hasattr(arr, "__cuda_array_interface__"):
+            arr = arr.get()
+
+        return arr
+
     @classmethod
     def from_labeled_mask(
         cls,

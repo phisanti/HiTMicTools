@@ -271,11 +271,17 @@ class Toprak_updated_nn(BasePipeline):
                 for label, class_name in zip(labels, object_classes)
             }
             vectorized_map = np.vectorize(lambda x: label_to_class_id.get(x, 0))
-            new_labeled_mask = vectorized_map(img_analyser.labeled_mask[:, 0, 0])
+            label_slice = img_analyser.get(
+                "labels", index=(slice(None), 0, 0), to_numpy=True
+            )
+            new_labeled_mask = vectorized_map(label_slice)
             labs_8bit = new_labeled_mask.astype(np.uint8)
             tifffile.imwrite(export_path + "_labels.tiff", labs_8bit)
         if export_aligned_image:
-            image_8bit = convert_image(img_analyser.img, np.uint8)
+            image_8bit = convert_image(
+                img_analyser.get("image", to_numpy=True),
+                np.uint8,
+            )
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
 
         img_logger.info(f"Analysis completed for {movie_name}", show_memory=True)
@@ -289,8 +295,10 @@ class Toprak_updated_nn(BasePipeline):
         return name
 
     def batch_classify_rois(self, img_analyser, batch_size=5):
-        labeled_mask = img_analyser.labeled_mask[:, 0, 0]  # .get()
-        img = img_analyser.img[:, 0, 0]  # .get()
+        labeled_mask = img_analyser.get(
+            "labels", index=(slice(None), 0, 0), to_numpy=True
+        )
+        img = img_analyser.get("image", index=(slice(None), 0, 0), to_numpy=True)
 
         n_frames = labeled_mask.shape[0]
         all_object_classes = []
