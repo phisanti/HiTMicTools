@@ -18,3 +18,4 @@ test_gpu_usage.py
 # Accidental files
 0.7.0
 NUL
+.gitignore
