@@ -5,7 +5,7 @@ setup(
     version="0.4.1",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
-    long_description=open("README.md").read(),
+    long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     python_requires=">=3.9",
     author="Santiago Cano-Muñiz",
