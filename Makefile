@@ -1,7 +1,9 @@
-.PHONY: help docs docs-clean docs-serve test test-verbose test-coverage clean clean-all install install-dev lint
+.PHONY: help list docs docs-clean docs-serve test test-verbose test-coverage clean clean-all install install-dev lint create-mbundle
 
 # Default Python interpreter
 PYTHON := /Users/santiago/miniconda3/envs/img_analysis/bin/python
+MODELS_INFO ?= config/config_model_bundle.yml
+OUTPUT_DIR ?= .
 
 # Documentation settings
 SPHINXOPTS    ?=
@@ -18,6 +20,7 @@ NC := \033[0m # No Color
 help:
 	@echo "$(BLUE)HiTMicTools Makefile Commands$(NC)"
 	@echo ""
+	@echo "  make list          - Print a table of available targets"
 	@echo "$(GREEN)Documentation:$(NC)"
 	@echo "  make docs          - Build HTML documentation"
 	@echo "  make docs-clean    - Clean documentation build files"
@@ -35,9 +38,36 @@ help:
 	@echo "  make install       - Install package in editable mode"
 	@echo "  make install-dev   - Install package with dev dependencies"
 	@echo "  make lint          - Run code linting (if ruff available)"
+	@echo "  make create-mbundle  - Create dated model bundle zip (defaults: MODELS_INFO=$(MODELS_INFO), OUTPUT_DIR=$(OUTPUT_DIR))"
 	@echo "  make clean         - Clean Python cache files"
 	@echo "  make clean-all     - Clean everything (cache, docs, builds)"
 	@echo ""
+
+list:
+	@# Keep this list in sync whenever targets change
+	@printf "%-18s %s\n" "Target" "Description"
+	@printf "%-18s %s\n" "------" "-----------"
+	@printf "%-18s %s\n" "help" "Show categorized help text"
+	@printf "%-18s %s\n" "list" "Print this list of targets"
+	@printf "%-18s %s\n" "docs" "Build HTML documentation"
+	@printf "%-18s %s\n" "docs-clean" "Remove documentation build files"
+	@printf "%-18s %s\n" "docs-serve" "Build docs and serve locally on port 8000"
+	@printf "%-18s %s\n" "docs-linkcheck" "Check documentation links for breakage"
+	@printf "%-18s %s\n" "test" "Run all tests"
+	@printf "%-18s %s\n" "test-verbose" "Run tests with verbose output"
+	@printf "%-18s %s\n" "test-coverage" "Run tests with coverage reporting"
+	@printf "%-18s %s\n" "test-model" "Run model component tests only"
+	@printf "%-18s %s\n" "test-workflow" "Run workflow tests only"
+	@printf "%-18s %s\n" "install" "Install package in editable mode"
+	@printf "%-18s %s\n" "install-dev" "Install package with development dependencies"
+	@printf "%-18s %s\n" "lint" "Run Ruff lint checks if available"
+	@printf "%-18s %s\n" "create-mbundle" "Create dated model bundle zip (defaults to config/config_model_bundle.yml)"
+	@printf "%-18s %s\n" "clean" "Remove Python cache artifacts"
+	@printf "%-18s %s\n" "clean-all" "Remove cache, docs, and build artifacts"
+
+create-mbundle:
+	@mkdir -p $(OUTPUT_DIR)
+	@$(PYTHON) scripts/create_model_bundle.py create-mbundle -i $(MODELS_INFO) -d $(OUTPUT_DIR)
 
 # Documentation commands
 docs:
