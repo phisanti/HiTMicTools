@@ -643,6 +643,8 @@ class BasePipeline(ABC):
 
         try:
             if get_device().type == "cuda":
+                # IMPORTANT: spawn required for CUDA; ThreadPoolExecutor would only use
+                # threads within individual cores, severely limiting parallelism.
                 mp_context = multiprocessing.get_context("spawn")
                 self.main_logger.info(
                     "Using spawn context with ProcessPoolExecutor for CUDA backend"
@@ -651,11 +653,14 @@ class BasePipeline(ABC):
                     max_workers=num_workers, mp_context=mp_context
                 )
             elif get_device().type == "mps":
+                # IMPORTANT: macOS does not work well with ProcessPoolExecutor (deadlocks,
+                # global state loss); ThreadPoolExecutor used instead (torch.compile disabled).
                 self.main_logger.info("Using ThreadPoolExecutor for MPS backend")
                 executor = concurrent.futures.ThreadPoolExecutor(
                     max_workers=num_workers
                 )
             else:
+                # IMPORTANT: fork required for CPU; spawn would cause global state loss.
                 mp_context = multiprocessing.get_context("fork")
                 self.main_logger.info(
                     "Using fork context with ProcessPoolExecutor for CPU backend"

@@ -61,7 +61,10 @@ class BaseModel:
                 model.load_state_dict(state_dict)
 
             model.to(device)
-            torch.compile(model, mode="max-autotune")
+            # IMPORTANT: skip torch.compile on MPS due to torch.fx symbolic tracing
+            # conflicts with ThreadPoolExecutor in parallel processing.
+            if device.type != "mps":
+                model = torch.compile(model, mode="max-autotune")
 
             return model
 

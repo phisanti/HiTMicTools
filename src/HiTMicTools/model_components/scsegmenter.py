@@ -127,10 +127,13 @@ class ScSegmenter(BaseModel):
         # is in eval mode to prevent dropout/batch-norm updates.
         self.model.model.model.eval()
 
-        # Compile the inner model for optimized inference
-        self.model.model.model = torch.compile(
-            self.model.model.model, mode="max-autotune"
-        )
+        # IMPORTANT: skip torch.compile on MPS due to torch.fx symbolic tracing
+        # conflicts with ThreadPoolExecutor in parallel processing.
+        if self.device.type != "mps":
+            # Compile the inner model for optimized inference
+            self.model.model.model = torch.compile(
+                self.model.model.model, mode="max-autotune"
+            )
 
     def predict(
         self,
