@@ -42,7 +42,7 @@ dependencies = [
     "rfdetr",
     "jax==0.4.23",
     "jaxlib==0.4.23",
-    "basicpy @ git+https://github.com/yuliu96/BaSiCPy_torch.git",
+    "basicpy @ git+https://github.com/phisanti/basicpy_scm.git",
     "jetraw-tools @ git+https://github.com/phisanti/jetraw_tools.git",
     "onnxruntime",
     "skl2onnx",
