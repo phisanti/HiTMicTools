@@ -11,6 +11,7 @@ from typing import Dict, Type, Set
 
 from HiTMicTools.pipelines.base_pipeline import BasePipeline
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
+from HiTMicTools.pipelines.ASCT_ImageProcessing import ASCTImageProcessing
 from HiTMicTools.pipelines.ASCT_scsegm import ASCT_scsegm
 from HiTMicTools.pipelines.ASCT_zaslavier import ASCT_zaslavier
 from HiTMicTools.pipelines.oof_detection import OOF_detection
@@ -48,6 +49,7 @@ class PipelineMetadata:
 # Model requirements are automatically discovered from each class
 PIPELINE_REGISTRY: Dict[str, PipelineMetadata] = {
     "ASCT_focusrestore": PipelineMetadata(ASCT_focusRestoration),
+    "ASCT_ImageProcessing": PipelineMetadata(ASCTImageProcessing),
     "ASCT_scsegm": PipelineMetadata(ASCT_scsegm),
     "ASCT_zaslavier": PipelineMetadata(ASCT_zaslavier),
     "oof_detection": PipelineMetadata(OOF_detection),
@@ -99,6 +101,7 @@ def list_pipelines() -> Dict[str, Set[str]]:
 __all__ = [
     "BasePipeline",
     "ASCT_focusRestoration",
+    "ASCTImageProcessing",
     "ASCT_scsegm",
     "ASCT_zaslavier",
     "OOF_detection",
