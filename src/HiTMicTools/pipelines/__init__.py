@@ -33,13 +33,11 @@ class PipelineMetadata:
         # Extract required_models from the class attribute
         self.required_models = getattr(cls, 'required_models', set())
 
-        # Validate that pipeline has required_models defined
+        # Validate that pipeline has required_models defined - MANDATORY
         if not self.required_models:
-            import warnings
-            warnings.warn(
-                f"Pipeline {cls.__name__} does not define 'required_models' class attribute. "
-                f"This may lead to loading unnecessary models.",
-                UserWarning
+            raise AttributeError(
+                f"Pipeline '{cls.__name__}' does not have 'required_models' class attribute.\n"
+                f"Please define required_models in the pipeline class as a set of model keys.\n"
             )
 
     def __repr__(self) -> str:

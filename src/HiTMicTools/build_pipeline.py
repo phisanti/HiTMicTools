@@ -54,21 +54,15 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
     analysis_wf.load_config_dict(configs.pipeline_setup)
     model_bundle = configs.get("models", {}).get("model_collection")
     if model_bundle:
-        # Use the load_model_bundle method if a bundle is provided
+        # Use the load_model_bundle method if a bundle is provided (always selective)
         analysis_wf.load_model_bundle(model_bundle)
     else:
-        # Load models individually using load_model_fromdict
-        for model_key in [
-            "segmentation",
-            "cell_classifier",
-            "bf_focus",
-            "fl_focus",
-            "pi_classification",
-            "oof_detector",
-            "sc_segmenter",
-        ]:
+        # Load models individually - ONLY those required by this pipeline
+        for model_key in pipeline_metadata.required_models:
             if model_key in configs:
                 analysis_wf.load_model_fromdict(model_key, configs[model_key])
+            else:
+                print(f"Warning: Required model '{model_key}' not found in config")
 
     # Load tracker if tracking is enabled and config is provided
     if configs.pipeline_setup.get("tracking", False):

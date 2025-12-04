@@ -228,7 +228,7 @@ class BasePipeline(ABC):
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 
-    def load_model_bundle(self, path_to_bundle: str, selective: bool = True) -> None:
+    def load_model_bundle(self, path_to_bundle: str) -> None:
         """
         Load models and configurations from a model bundle.
         The model bundle must be a zip file with the following structure:
@@ -239,14 +239,16 @@ class BasePipeline(ABC):
         └── metadata/           # Directory containing model metadata
             ├── model_x.json
 
+        Only models required by this pipeline (defined in required_models class attribute)
+        will be loaded from the bundle.
+
         Args:
             path_to_bundle (str): Path to the model bundle zip file.
-            selective (bool): If True, only load models required by this pipeline.
-                If False, load all models in the bundle. Defaults to True.
 
         Raises:
             FileNotFoundError: If the bundle path does not exist or is not a file.
             ValueError: If the bundle is not a zip file or has an invalid structure.
+            AttributeError: If the pipeline does not define required_models.
         """
 
         if not os.path.isfile(path_to_bundle):
@@ -254,13 +256,18 @@ class BasePipeline(ABC):
         if not path_to_bundle.endswith(".zip"):
             raise ValueError("Model bundle must be a .zip file")
 
-        # Get pipeline's required models for selective loading
+        # Get pipeline's required models - MANDATORY for selective loading
         required_models = getattr(self, 'required_models', None)
-        if selective and required_models:
-            self.main_logger.info(
-                f"Selective loading enabled for {self.__class__.__name__}. "
-                f"Required models: {', '.join(sorted(required_models))}"
+        if not required_models:
+            raise AttributeError(
+                f"Pipeline '{self.__class__.__name__}' does not have 'required_models' class attribute.\n"
+                f"Please define required_models in the pipeline class as a set of model keys.\n"
             )
+
+        self.main_logger.info(
+            f"Selective loading enabled for {self.__class__.__name__}. "
+            f"Required models: {', '.join(sorted(required_models))}"
+        )
 
         # Define mapping between config keys and internal model types for proper loading
         model_type_mapping = {
@@ -299,8 +306,8 @@ class BasePipeline(ABC):
                     # Process each model in the bundle
                     for model_key, model_config in config.items():
                         if model_key in model_type_mapping:
-                            # Skip models not required by this pipeline
-                            if selective and required_models and model_key not in required_models:
+                            # Skip models not required by this pipeline (ALWAYS selective)
+                            if model_key not in required_models:
                                 self.main_logger.info(
                                     f"Skipping {model_key} (not required by {self.__class__.__name__})"
                                 )

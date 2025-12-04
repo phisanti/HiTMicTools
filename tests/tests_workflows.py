@@ -7,6 +7,7 @@ import shutil
 from HiTMicTools.confreader import ConfReader
 from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
+from HiTMicTools.pipelines.ASCT_scsegm import ASCT_scsegm
 from HiTMicTools.pipelines.base_pipeline import BasePipeline
 
 
@@ -15,6 +16,7 @@ class TestPipelineConfigLoading(unittest.TestCase):
         self.test_config = "./config/test_model_bundle.yml"
         self.pipeline_map = {
             "ASCT_focusrestore": ASCT_focusRestoration,
+            "ASCT_scsegm": ASCT_scsegm,
             "toprak_nn": Toprak_updated_nn,
         }
 
@@ -85,8 +87,10 @@ class TestOofDetectorLoading(unittest.TestCase):
 
     def test_oof_detector_loading_from_dict(self):
         """Test loading OofDetector via load_model_fromdict."""
-        # Create minimal pipeline
+        # Create minimal pipeline with required_models
         class MinimalPipeline(BasePipeline):
+            required_models = {"oof_detector"}  # Define required models
+
             def analyse_image(self, *args, **kwargs):
                 pass
 
