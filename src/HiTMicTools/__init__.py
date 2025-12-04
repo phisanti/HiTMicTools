@@ -1,6 +1,6 @@
 try:
-    import pkg_resources
+    from importlib.metadata import version, PackageNotFoundError
 
-    __version__ = pkg_resources.get_distribution("HiTMicTools").version
-except pkg_resources.DistributionNotFound:
+    __version__ = version("HiTMicTools")
+except PackageNotFoundError:
     __version__ = "0.0.0+dev"
