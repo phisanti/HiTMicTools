@@ -5,7 +5,6 @@ import tempfile
 import shutil
 
 from HiTMicTools.confreader import ConfReader
-from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
 from HiTMicTools.pipelines.ASCT_scsegm import ASCT_scsegm
 from HiTMicTools.pipelines.base_pipeline import BasePipeline
@@ -13,11 +12,10 @@ from HiTMicTools.pipelines.base_pipeline import BasePipeline
 
 class TestPipelineConfigLoading(unittest.TestCase):
     def setUp(self):
-        self.test_config = "./config/test_model_bundle.yml"
+        self.test_config = "./config/templates/test_model_bundle.yml"
         self.pipeline_map = {
             "ASCT_focusrestore": ASCT_focusRestoration,
             "ASCT_scsegm": ASCT_scsegm,
-            "toprak_nn": Toprak_updated_nn,
         }
 
     def test_pipeline_config_loading(self):
