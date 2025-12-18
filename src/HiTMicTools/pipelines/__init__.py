@@ -15,7 +15,6 @@ from HiTMicTools.pipelines.ASCT_ImageProcessing import ASCTImageProcessing
 from HiTMicTools.pipelines.ASCT_scsegm import ASCT_scsegm
 from HiTMicTools.pipelines.ASCT_zaslavier import ASCT_zaslavier
 from HiTMicTools.pipelines.oof_detection import OOF_detection
-from HiTMicTools.pipelines.toprak_updated_nn import Toprak_updated_nn
 
 
 class PipelineMetadata:
@@ -53,7 +52,6 @@ PIPELINE_REGISTRY: Dict[str, PipelineMetadata] = {
     "ASCT_scsegm": PipelineMetadata(ASCT_scsegm),
     "ASCT_zaslavier": PipelineMetadata(ASCT_zaslavier),
     "oof_detection": PipelineMetadata(OOF_detection),
-    "toprak_nn": PipelineMetadata(Toprak_updated_nn),
 }
 
 
@@ -105,7 +103,6 @@ __all__ = [
     "ASCT_scsegm",
     "ASCT_zaslavier",
     "OOF_detection",
-    "Toprak_updated_nn",
     "PipelineMetadata",
     "PIPELINE_REGISTRY",
     "get_pipeline",
