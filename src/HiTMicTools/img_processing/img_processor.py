@@ -105,7 +105,6 @@ class ImagePreprocessor:
             compres_align (float, default=0): Compression ratio to crop image for alignment.
             normalise_image (bool, default=True): Whether to normalize the image.
             crop_image (bool, default=True): Whether to crop the black region after alignment.
-            align_all_channels (bool, default=False): Whether to align all channels with the translation matrix from the reference channel.
             alignment_config (Optional[Dict], default=None): Configuration for StackAligner.
             bbox (Optional[Tuple[int, int, int, int]], default=None): Bounding box for template matching.
             reference_type (str, default="static"): 'static' or 'dynamic' reference type.
