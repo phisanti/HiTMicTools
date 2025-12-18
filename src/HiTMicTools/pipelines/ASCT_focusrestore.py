@@ -86,7 +86,7 @@ class ASCT_focusRestoration(BasePipeline):
         movie_name = remove_file_extension(name)
         name = movie_name
         # Desync analysis to avoid RAM/VRAM issues
-        sleep_time = random.uniform(0, 10)
+
         img_logger = self.setup_logger(self.output_path, movie_name)
         img_logger.info(f"Start analysis for {movie_name}")
         reference_channel = self.reference_channel
