@@ -1,4 +1,4 @@
-.PHONY: help list docs docs-clean docs-serve test test-verbose test-coverage clean clean-all install install-dev lint create-mbundle
+.PHONY: help list docs docs-clean docs-serve docs-linkcheck test test-verbose test-coverage test-model test-workflow clean clean-all install install-dev lint create-mbundle
 
 # Default Python interpreter
 PYTHON := /Users/santiago/miniconda3/envs/img_analysis/bin/python
@@ -17,7 +17,7 @@ GREEN := \033[0;32m
 YELLOW := \033[0;33m
 NC := \033[0m # No Color
 
-help:
+help: # Show categorized help text for common targets
 	@echo "$(BLUE)HiTMicTools Makefile Commands$(NC)"
 	@echo ""
 	@echo "  make list          - Print a table of available targets"
@@ -43,7 +43,7 @@ help:
 	@echo "  make clean-all     - Clean everything (cache, docs, builds)"
 	@echo ""
 
-list:
+list: # Print a table of available Make targets
 	@# Keep this list in sync whenever targets change
 	@printf "%-18s %s\n" "Target" "Description"
 	@printf "%-18s %s\n" "------" "-----------"
@@ -65,69 +65,69 @@ list:
 	@printf "%-18s %s\n" "clean" "Remove Python cache artifacts"
 	@printf "%-18s %s\n" "clean-all" "Remove cache, docs, and build artifacts"
 
-create-mbundle:
+create-mbundle: # Create dated model-bundle zip (args: MODELS_INFO=config/config_model_bundle.yml, OUTPUT_DIR=.)
 	@mkdir -p $(OUTPUT_DIR)
 	@$(PYTHON) scripts/create_model_bundle.py create-mbundle -i $(MODELS_INFO) -d $(OUTPUT_DIR)
 
 # Documentation commands
-docs:
+docs: # Build HTML documentation with Sphinx (outputs to docs/build/html)
 	@echo "$(BLUE)Building documentation...$(NC)"
 	@$(SPHINXBUILD) -M html "$(DOCSOURCEDIR)" "$(DOCBUILDDIR)" $(SPHINXOPTS) $(O)
 	@echo "$(GREEN)Documentation built successfully!$(NC)"
 	@echo "Open: $(DOCBUILDDIR)/html/index.html"
 
-docs-clean:
+docs-clean: # Remove documentation build output under docs/build/
 	@echo "$(YELLOW)Cleaning documentation build files...$(NC)"
 	@rm -rf $(DOCBUILDDIR)/*
 	@echo "$(GREEN)Documentation cleaned$(NC)"
 
-docs-serve: docs
+docs-serve: docs # Build docs then serve locally on http://localhost:8000
 	@echo "$(BLUE)Starting local documentation server...$(NC)"
 	@echo "$(GREEN)Documentation available at: http://localhost:8000$(NC)"
 	@echo "Press Ctrl+C to stop"
 	@cd $(DOCBUILDDIR)/html && $(PYTHON) -m http.server 8000
 
-docs-linkcheck:
+docs-linkcheck: # Run Sphinx linkcheck to find broken external/internal links
 	@echo "$(BLUE)Checking documentation links...$(NC)"
 	@$(SPHINXBUILD) -M linkcheck "$(DOCSOURCEDIR)" "$(DOCBUILDDIR)" $(SPHINXOPTS) $(O)
 
 # Testing commands
-test:
+test: # Run full test suite (unittest discovery under tests/)
 	@echo "$(BLUE)Running all tests...$(NC)"
 	@$(PYTHON) -m unittest discover tests -v
 
-test-verbose:
+test-verbose: # Run tests with verbose output (same as `make test`)
 	@echo "$(BLUE)Running tests with verbose output...$(NC)"
 	@$(PYTHON) -m unittest discover tests -v
 
-test-coverage:
+test-coverage: # Run tests with coverage + generate htmlcov/ report
 	@echo "$(BLUE)Running tests with coverage...$(NC)"
 	@$(PYTHON) -m coverage run -m unittest discover tests
 	@$(PYTHON) -m coverage report
 	@$(PYTHON) -m coverage html
 	@echo "$(GREEN)Coverage report generated: htmlcov/index.html$(NC)"
 
-test-model:
+test-model: # Run model component tests only (tests/model_components)
 	@echo "$(BLUE)Running model component tests...$(NC)"
 	@$(PYTHON) -m unittest discover tests/model_components -v
 
-test-workflow:
+test-workflow: # Run workflow/pipeline tests only (tests/tests_workflows)
 	@echo "$(BLUE)Running workflow tests...$(NC)"
 	@$(PYTHON) -m unittest discover tests/tests_workflows -v
 
 # Development commands
-install:
+install: # Install HiTMicTools in editable mode into the configured Python env
 	@echo "$(BLUE)Installing HiTMicTools in editable mode...$(NC)"
 	@$(PYTHON) -m pip install -e .
 	@echo "$(GREEN)Installation complete$(NC)"
 
-install-dev:
+install-dev: # Install editable + dev tools (pytest/coverage/ruff/sphinx) via pip
 	@echo "$(BLUE)Installing HiTMicTools with development dependencies...$(NC)"
 	@$(PYTHON) -m pip install -e .
 	@$(PYTHON) -m pip install pytest coverage ruff sphinx sphinx-rtd-theme myst-parser
 	@echo "$(GREEN)Development installation complete$(NC)"
 
-lint:
+lint: # Run Ruff lint checks (skips with message if ruff not installed)
 	@echo "$(BLUE)Running linter...$(NC)"
 	@if command -v ruff >/dev/null 2>&1; then \
 		ruff check src tests; \
@@ -136,7 +136,7 @@ lint:
 	fi
 
 # Cleanup commands
-clean:
+clean: # Remove Python cache artifacts (__pycache__, *.pyc, *.egg-info, .pytest_cache)
 	@echo "$(YELLOW)Cleaning Python cache files...$(NC)"
 	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	@find . -type f -name "*.pyc" -delete
@@ -144,7 +144,7 @@ clean:
 	@find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
 	@echo "$(GREEN)Python cache cleaned$(NC)"
 
-clean-all: clean docs-clean
+clean-all: clean docs-clean # Remove cache + docs + build artifacts (dist/, build/, htmlcov/, .coverage)
 	@echo "$(YELLOW)Cleaning all build artifacts...$(NC)"
 	@rm -rf dist/
 	@rm -rf build/
