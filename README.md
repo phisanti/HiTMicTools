@@ -40,12 +40,15 @@ pyyaml
 joblib
 jax==0.4.23
 jaxlib==0.4.23 
-basicpy
+rfdetr
+hyperactive==4.8.0
+basicpy==1.2.0b0
 jetraw-tools
 onnxruntime
 skl2onnx
 ```
-The fix versioning of the jax libraries is due to the basicpy package which is still under heavy development.
+Starting with the `1.2.0b0` release, `basicpy` now follows semantic versioning for the beta series, so we pin the package explicitly and still keep the JAX versions fixed because Basicpy itself pulls in constrained `jax`/`jaxlib` builds. This also helps to avoid the version blocking of scipy and other packages by basicpy.
+We also pin `hyperactive==4.8.0` to avoid dependency resolution conflicts between `basicpy` and `rfdetr`.
 
 For CUDA support (optional):
 ```
@@ -53,9 +56,9 @@ cupy-cuda11x
 cudf
 cucim
 ```
-Moreover, it is also necessary to install the jetraw-tools and basicpy package from the source:
+Moreover, install the Basicpy and jetraw-tools packages from their source forks (Basicpy 1.2.0b0 is currently required):
 ```bash
-   pip install git+https://github.com/yuliu96/BaSiCPy_torch.git
+   pip install git+https://github.com/phisanti/basicpy_scm.git
    pip install git+https://github.com/phisanti/jetraw_tools.git
 ```
 

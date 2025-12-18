@@ -40,6 +40,7 @@ dependencies = [
     "pyyaml",
     "joblib",
     "rfdetr",
+    "hyperactive==4.8.0",
     "jax==0.4.23",
     "jaxlib==0.4.23",
     "basicpy @ git+https://github.com/phisanti/basicpy_scm.git",
