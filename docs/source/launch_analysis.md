@@ -31,6 +31,13 @@ cd HiTMicTools
 pip install -e .
 ```
 
+### Dependency Note (Hyperactive)
+HiTMicTools pins `hyperactive==4.8.0` to avoid dependency conflicts between `basicpy` and `rfdetr`.
+If you have an existing environment with a different `hyperactive` version, reinstall it explicitly:
+```bash
+pip install "hyperactive==4.8.0"
+```
+
 ### Required Assets
 - **Model Collection**: Download or locate the appropriate model bundle (e.g., `model_collection_tracking_20250529.zip`)
   - These files contain all necessary neural network weights for segmentation, classification, and focus restoration
@@ -125,7 +132,6 @@ models:
 - **ASCT_focusrestore**: Focus restoration + segmentation + classification (most common)
 - **ASCT_scsegm**: Single-cell instance segmentation with RT-DETR
 - **ASCT_zaslavier**: Specialized pipeline for Zaslavier lab workflow
-- **toprak_updated_nn**: Neural network-based analysis pipeline
 
 ### Processing Single Files
 

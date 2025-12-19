@@ -67,41 +67,68 @@ model_collection_tracking_20250529.zip
 
 ### Creating Custom Model Collections
 
-Use the provided script to bundle your own models:
+#### Using the CLI (Recommended)
+
+Create model bundles directly from the command line:
 
 ```bash
-# 1. Create a configuration file
-cat > bundle_config.yml << EOF
-model_collection:
-  name: "my_custom_collection"
-  version: "1.0"
-  description: "Custom model bundle for experiment X"
+# 1. Create a configuration file describing your models
+cat > models_info.yml << EOF
+bf_focus:
+  model_path: "./models/bf_focus/model.pth"
+  model_metadata: "./models/bf_focus/config.json"
+  inferer_args:
+    scale_method: "range01"
+    patch_size: 256
 
-  models:
-    bf_focus:
-      model_path: "./models/bf_focus/model.pth"
-      metadata_path: "./models/bf_focus/config.json"
+fl_focus:
+  model_path: "./models/fl_focus/model.pth"
+  model_metadata: "./models/fl_focus/config.json"
 
-    fl_focus:
-      model_path: "./models/fl_focus/model.pth"
-      metadata_path: "./models/fl_focus/config.json"
+segmentation:
+  model_path: "./models/segmentation/model.pth"
+  model_metadata: "./models/segmentation/config.json"
 
-    segmentation:
-      model_path: "./models/segmentation/model.pth"
-      metadata_path: "./models/segmentation/config.json"
+cell_classifier:
+  model_path: "./models/classifier/model.onnx"
+  model_metadata: "./models/classifier/config.json"
 
-    cell_classifier:
-      model_path: "./models/classifier/model.onnx"
-      metadata_path: "./models/classifier/config.json"
+pi_classification:
+  model_path: "./models/pi_classifier/model.joblib"
 
-    tracking:
-      config_path: "./tracking/config.json"  # Optional
+tracker:
+  config_path: "./tracking/config.json"  # Optional
 EOF
 
-# 2. Create the bundle
-python scripts/create_model_bundle.py \
-    -i bundle_config.yml \
+# 2. Create the bundle (date will be auto-inserted)
+hitmictools bundle -i models_info.yml -o my_custom_collection.zip
+# Creates: my_custom_collection_20251218.zip
+
+# Disable auto-dating if you want exact filename
+hitmictools bundle -i models_info.yml -o my_bundle.zip --no-auto-date
+```
+
+The bundle will include:
+- All model files with standardized naming
+- Metadata JSON files for each model
+- Internal `config.yml` with creation timestamp
+- Optional tracker configuration
+
+#### Using the Standalone Script (Legacy)
+
+For backward compatibility, the script interface is still available:
+
+```bash
+# Explicit output path (no auto-dating)
+python scripts/create_model_bundle.py create \
+    -i models_info.yml \
     -o my_custom_collection.zip
+
+# Auto-dated output
+python scripts/create_model_bundle.py create-mbundle \
+    -i models_info.yml \
+    -d ./output_directory/
+# Creates: ./output_directory/model_collection_20251218.zip
 ```
 
 ## 2. Individual Model Specification (Advanced)
@@ -520,19 +547,19 @@ models/
 For sharing models:
 
 ```bash
-# 1. Create bundle
-python scripts/create_model_bundle.py \
-    -i config.yml \
-    -o model_collection_v1.0.zip
+# 1. Create bundle with CLI
+hitmictools bundle -i models_info.yml -o model_collection_v1.0.zip
+# Creates: model_collection_v1.0_20251218.zip (with auto-dating)
 
 # 2. Calculate checksum
-sha256sum model_collection_v1.0.zip > model_collection_v1.0.zip.sha256
+sha256sum model_collection_v1.0_20251218.zip > model_collection_v1.0_20251218.zip.sha256
 
 # 3. Document
 echo "Model Collection v1.0" > README.txt
+echo "Creation date: 2025-12-18" >> README.txt
 echo "Training date: 2025-05-29" >> README.txt
 echo "Dataset: ASCT_training_set_042" >> README.txt
-cat model_collection_v1.0.zip.sha256 >> README.txt
+cat model_collection_v1.0_20251218.zip.sha256 >> README.txt
 
 # 4. Share via cloud/network storage
 # DO NOT email large files
