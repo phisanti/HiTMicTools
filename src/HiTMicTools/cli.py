@@ -106,6 +106,47 @@ def run_pipeline(args):
     build_and_run_pipeline(args.config, args.worklist)
 
 
+def add_bundle_command(subparsers):
+    """Add the bundle command to the CLI"""
+    parser = subparsers.add_parser(
+        "bundle",
+        help="Create a model bundle (ZIP archive) from a configuration file"
+    )
+    parser.add_argument(
+        "-i",
+        "--input-config",
+        type=str,
+        required=True,
+        help="Path to the YAML file describing models to bundle",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        required=True,
+        help="Output path for the bundle (e.g., my_bundle.zip). Date will be auto-inserted.",
+    )
+    parser.add_argument(
+        "--no-auto-date",
+        action="store_true",
+        help="Disable automatic date insertion in filename",
+    )
+    parser.set_defaults(func=run_bundle)
+
+
+def run_bundle(args):
+    """Run the bundle command"""
+    from HiTMicTools.model_bundler import create_model_bundle
+
+    auto_date = not args.no_auto_date
+    output_path = create_model_bundle(
+        args.input_config,
+        args.output,
+        auto_date=auto_date
+    )
+    print(f"Model bundle created successfully: {output_path}")
+
+
 def add_generate_slurm_command(subparsers):
     """Add the generate-slurm command to the CLI"""
     parser = subparsers.add_parser(
@@ -215,6 +256,7 @@ def hitmictools():
 
     # Add commands
     add_run_pipeline_command(subparsers)
+    add_bundle_command(subparsers)
     add_split_files_command(subparsers)
     add_generate_slurm_command(subparsers)
 
