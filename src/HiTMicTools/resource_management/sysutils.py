@@ -1,8 +1,10 @@
 import os
 import platform
+import re
+import subprocess
 import sys
 import time
-from typing import Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 # Platform-specific imports
 if platform.system() == "Windows":
@@ -198,10 +200,10 @@ def file_lock_manager(
 def is_file_locked(file_path: str) -> bool:
     """
     Check if a file is currently locked by attempting to acquire an exclusive lock.
-    
+
     Args:
         file_path: Path to the file to check
-        
+
     Returns:
         bool: True if file is locked, False if available
     """
@@ -214,3 +216,189 @@ def is_file_locked(file_path: str) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def run_command(cmd: str, timeout: int = 5) -> Tuple[int, str, str]:
+    """
+    Run a shell command and return the result.
+
+    Args:
+        cmd: Command to execute
+        timeout: Maximum execution time in seconds
+
+    Returns:
+        Tuple of (return_code, stdout, stderr)
+    """
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return -1, "", "Command timed out"
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def check_nvidia_smi() -> Dict[str, any]:
+    """
+    Check nvidia-smi availability and GPU information.
+
+    Returns:
+        dict: Dictionary containing nvidia-smi status and GPU information
+    """
+    result = {
+        "available": False,
+        "driver_version": None,
+        "cuda_version": None,
+        "gpus": [],
+        "error": None
+    }
+
+    ret_code, stdout, stderr = run_command("nvidia-smi")
+    if ret_code != 0:
+        result["error"] = f"nvidia-smi failed: {stderr if stderr else 'command not found'}"
+        return result
+
+    result["available"] = True
+
+    # Extract driver version
+    driver_match = re.search(r'Driver Version: (\S+)', stdout)
+    if driver_match:
+        result["driver_version"] = driver_match.group(1)
+
+    # Extract CUDA version
+    cuda_match = re.search(r'CUDA Version: (\S+)', stdout)
+    if cuda_match:
+        result["cuda_version"] = cuda_match.group(1)
+
+    # Get detailed GPU information
+    ret_code, gpu_info, _ = run_command(
+        "nvidia-smi --query-gpu=index,name,memory.total,memory.free,temperature.gpu,utilization.gpu "
+        "--format=csv,noheader,nounits"
+    )
+
+    if ret_code == 0 and gpu_info:
+        for line in gpu_info.split('\n'):
+            if line.strip():
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 6:
+                    result["gpus"].append({
+                        "index": int(parts[0]),
+                        "name": parts[1],
+                        "memory_total_mb": float(parts[2]),
+                        "memory_free_mb": float(parts[3]),
+                        "temperature_c": parts[4] if parts[4] != "N/A" else None,
+                        "utilization_percent": parts[5] if parts[5] != "N/A" else None
+                    })
+
+    return result
+
+
+def check_environment_variables() -> Dict[str, Optional[str]]:
+    """
+    Check important CUDA-related environment variables.
+
+    Returns:
+        dict: Dictionary of environment variable names and values
+    """
+    env_vars = {
+        "CUDA_HOME": os.environ.get("CUDA_HOME"),
+        "CUDA_PATH": os.environ.get("CUDA_PATH"),
+        "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH"),
+        "PATH": os.environ.get("PATH"),
+        "TMPDIR": os.environ.get("TMPDIR"),
+        "SLURM_JOB_ID": os.environ.get("SLURM_JOB_ID"),
+        "SLURM_JOB_GPUS": os.environ.get("SLURM_JOB_GPUS"),
+        "SLURM_GPUS_ON_NODE": os.environ.get("SLURM_GPUS_ON_NODE"),
+    }
+    return env_vars
+
+
+def check_pytorch_cuda() -> Dict[str, any]:
+    """
+    Check PyTorch CUDA availability and configuration.
+
+    Returns:
+        dict: Dictionary containing PyTorch CUDA status and details
+    """
+    result = {
+        "pytorch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": None,
+        "cudnn_version": None,
+        "gpu_count": 0,
+        "gpus": [],
+        "tensor_test": {"success": False, "error": None},
+        "error": None
+    }
+
+    if result["cuda_available"]:
+        result["cuda_version"] = torch.version.cuda if hasattr(torch.version, 'cuda') else None
+        result["cudnn_version"] = torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None
+        result["gpu_count"] = torch.cuda.device_count()
+
+        for i in range(result["gpu_count"]):
+            try:
+                props = torch.cuda.get_device_properties(i)
+                free_mem, total_mem = torch.cuda.mem_get_info(i)
+
+                result["gpus"].append({
+                    "index": i,
+                    "name": torch.cuda.get_device_name(i),
+                    "compute_capability": f"{props.major}.{props.minor}",
+                    "total_memory_gb": props.total_memory / (1024**3),
+                    "free_memory_gb": free_mem / (1024**3),
+                    "used_memory_gb": (total_mem - free_mem) / (1024**3),
+                    "multiprocessor_count": props.multi_processor_count
+                })
+            except Exception as e:
+                result["error"] = f"Error accessing GPU {i}: {str(e)}"
+
+        # Test tensor creation
+        try:
+            test_device = torch.device("cuda:0")
+            x = torch.randn(100, 100, device=test_device)
+            y = torch.randn(100, 100, device=test_device)
+            z = torch.matmul(x, y)
+            torch.cuda.synchronize()
+            del x, y, z
+            torch.cuda.empty_cache()
+            result["tensor_test"]["success"] = True
+        except Exception as e:
+            result["tensor_test"]["error"] = str(e)
+    else:
+        result["error"] = "CUDA is not available to PyTorch"
+
+    return result
+
+
+def check_loaded_modules() -> List[str]:
+    """
+    Check loaded environment modules (for HPC systems using module system).
+
+    Returns:
+        List of loaded module names
+    """
+    modules = []
+
+    # Check if module command is available
+    ret_code, stdout, _ = run_command("module list 2>&1")
+    if ret_code == 0 and stdout:
+        # Parse module list output
+        for line in stdout.split('\n'):
+            # Skip header lines
+            if 'Currently Loaded' in line or '---' in line or not line.strip():
+                continue
+            # Extract module names
+            parts = line.strip().split()
+            for part in parts:
+                if '/' in part or any(keyword in part.lower() for keyword in ['cuda', 'python', 'gcc']):
+                    modules.append(part)
+
+    return modules

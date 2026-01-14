@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 from pathlib import Path
 from typing import Callable, Dict, Any
 from HiTMicTools.build_pipeline import build_and_run_pipeline
@@ -247,6 +248,36 @@ def run_generate_slurm(args):
     print(f"Submit with: sbatch {args.output_file}")
 
 
+def add_gpu_check_command(subparsers):
+    """Add the gpu-check command to the CLI"""
+    parser = subparsers.add_parser(
+        "gpu-check",
+        help="Run comprehensive GPU diagnostics to detect and troubleshoot GPU issues"
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default=None,
+        help="Save diagnostics output to file (optional)"
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show detailed output including full environment variables"
+    )
+    parser.set_defaults(func=run_gpu_check)
+
+
+def run_gpu_check(args):
+    """Run GPU diagnostics"""
+    from HiTMicTools.resource_management.gpu_diagnostics import run_gpu_diagnostics
+
+    exit_code = run_gpu_diagnostics(output_file=args.output, verbose=args.verbose)
+    sys.exit(exit_code)
+
+
 def hitmictools():
     """Main entry point for HiTMicTools CLI"""
     parser = argparse.ArgumentParser(
@@ -259,5 +290,6 @@ def hitmictools():
     add_bundle_command(subparsers)
     add_split_files_command(subparsers)
     add_generate_slurm_command(subparsers)
+    add_gpu_check_command(subparsers)
 
     return parser

@@ -136,7 +136,34 @@ hitmictools generate-slurm \
     --n-blocks 10 \
     --conda-env 'hitmictools' \
     --config-file 'config.yml'
+
+# Check GPU availability and diagnose issues
+hitmictools gpu-check [--output <report_file>] [--verbose]
 ```
+
+### GPU Diagnostics
+
+Before running GPU-intensive pipelines, verify your GPU setup:
+
+```bash
+# Basic GPU check
+hitmictools gpu-check
+
+# Save detailed report
+hitmictools gpu-check --output gpu_report.txt --verbose
+
+# On HPC/SLURM cluster
+sbatch scripts/gpu_diagnostic_slurm.sh
+```
+
+The GPU diagnostic tool checks:
+- NVIDIA driver and GPU availability
+- PyTorch CUDA configuration
+- Environment variables and modules
+- Actual GPU compute capability
+- SLURM GPU allocation (if applicable)
+
+See [GPU Diagnostics Guide](docs/gpu-diagnostics-guide.md) for detailed troubleshooting steps.
 
 ## 🔧 Configuration
 
