@@ -257,9 +257,3 @@ If GPU issues persist after following troubleshooting steps:
    - SLURM job ID (if applicable)
    - Node hostname
    - Loaded modules (`module list`)
-
-## Related Documentation
-
-- [HiTMicTools README](../README.md) - Main project documentation
-- [Resource Management](../src/HiTMicTools/resource_management/CLAUDE.md) - Details on GPU resource allocation
-- [SLURM Job Generation](../docs/slurm-guide.md) - Creating SLURM job scripts (if exists)
