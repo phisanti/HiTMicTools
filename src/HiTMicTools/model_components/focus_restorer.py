@@ -25,6 +25,7 @@ class FocusRestorer(BaseModel):
         scale_method="range01",
         half_precision: bool = False,
         scaler_args: dict = {},
+        compile_mode: str = False,
     ) -> None:
         """
         Initializes a Segmentator object.
@@ -36,6 +37,11 @@ class FocusRestorer(BaseModel):
             overlap_ratio (float): The overlap ratio between patches for sliding window inference.
             scale_method (range01, eq-centered or none): The method for image scaling before inference.
             half_precision (bool, optional): Whether to use half-precision (FP16) for inference. Defaults to False.
+            compile_mode (str or False): Torch compile mode. Options:
+                - "default": Fast compilation, good performance
+                - "reduce-overhead": Optimized for small batches, uses CUDA graphs
+                - "max-autotune": Slowest compilation, best runtime performance
+                - False: Disable torch.compile entirely
         """
 
         assert isinstance(patch_size, int) and patch_size > 0, (
@@ -64,7 +70,7 @@ class FocusRestorer(BaseModel):
 
         self.device = get_device()
         self.model = self.get_model(
-            model_path, model_graph=model_graph, device=self.device
+            model_path, model_graph=model_graph, device=self.device, compile_mode=compile_mode
         )
         self.patch_size = patch_size
         self.overlap_ratio = overlap_ratio

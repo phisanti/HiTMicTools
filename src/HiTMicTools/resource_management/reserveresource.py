@@ -32,10 +32,16 @@ class ReserveResource:
         - Support for CUDA, MPS, and CPU devices
 
     Usage:
-        
-        device = torch.device("cuda")
+
+        from .sysutils import get_device
+
+        # Auto-detect device with explicit GPU index (cuda:0, mps, or cpu)
+        device = get_device()
         logger = logging.getLogger(__name__)
-        
+
+        # Or specify a specific GPU in multi-GPU systems
+        # device = torch.device("cuda:1")  # Use second GPU
+
         with ReserveResource(device, required_gb=8.0, logger=logger) as resource:
             # Your GPU-intensive/CPU/MPS code here
             model = load_model()

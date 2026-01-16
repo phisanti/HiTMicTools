@@ -82,7 +82,7 @@ class ASCTImageProcessing(BasePipeline):
 
         # 1. Read Image:
         device = get_device()
-        is_cuda = device == torch.device("cuda")
+        is_cuda = device.type == "cuda"
         movie_name = remove_file_extension(name)
         img_logger = self.setup_logger(self.output_path, movie_name)
         img_logger.info(f"Start single-frame analysis for {movie_name}")

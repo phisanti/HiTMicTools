@@ -34,6 +34,9 @@ class OofDetector(BaseModel):
     the results with batched NMS to recover full-frame detections.
     """
 
+    # Valid compile modes for torch.compile
+    VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
+
     def __init__(
         self,
         model_path: str,
@@ -43,6 +46,7 @@ class OofDetector(BaseModel):
         nms_iou: float = 0.5,
         class_dict: Optional[dict] = None,
         model_type: str = "rfdetrbase",
+        compile_mode: str = False,
     ) -> None:
         """
         Args:
@@ -54,9 +58,21 @@ class OofDetector(BaseModel):
             class_dict: Dictionary mapping class names to indices. If provided,
                 num_classes is derived from its length. If None, inferred from checkpoint.
             model_type: Identifier for the detector backbone to instantiate.
+            compile_mode (str or False): Torch compile mode. Options:
+                - "default": Fast compilation, good performance
+                - "reduce-overhead": Optimized for small batches, uses CUDA graphs
+                - "max-autotune": Slowest compilation, best runtime performance
+                - False: Disable torch.compile entirely
         """
         assert 0 <= overlap_ratio < 1, "overlap_ratio must be in [0, 1)."
         assert patch_size > 0, "patch_size must be positive."
+
+        # Validate compile_mode
+        if compile_mode not in self.VALID_COMPILE_MODES:
+            raise ValueError(
+                f"Invalid compile_mode: {compile_mode}. "
+                f"Must be one of: {self.VALID_COMPILE_MODES}"
+            )
 
         self.device = get_device()
         if self.device.type == "mps":
@@ -98,10 +114,12 @@ class OofDetector(BaseModel):
         # is in eval mode to prevent dropout/batch-norm updates.
         self.model.model.model.eval()
 
-        # Compile the inner model for optimized inference
-        self.model.model.model = torch.compile(
-            self.model.model.model, mode="max-autotune"
-        )
+        # IMPORTANT: skip torch.compile on MPS due to torch.fx symbolic tracing
+        # conflicts with ThreadPoolExecutor in parallel processing.
+        if compile_mode and self.device.type != "mps":
+            self.model.model.model = torch.compile(
+                self.model.model.model, mode=compile_mode
+            )
 
     def predict(
         self,

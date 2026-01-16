@@ -48,6 +48,9 @@ class ScSegmenter(BaseModel):
     # Class constant for per-tile normalization
     NORMALIZATION_EPSILON = 1e-6  # Prevent division by zero in per-tile normalization
 
+    # Valid compile modes for torch.compile
+    VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
+
     def __init__(
         self,
         model_path: str,
@@ -60,6 +63,7 @@ class ScSegmenter(BaseModel):
         mask_threshold: float = 0.5,
         class_dict: Optional[dict] = None,
         model_type: str = "rfdetrsegpreview",
+        compile_mode: str = False,
     ) -> None:
         """
         Initialize the single-cell segmenter.
@@ -76,12 +80,24 @@ class ScSegmenter(BaseModel):
             class_dict: Dictionary mapping class indices to names (e.g., {0: 'single-cell', 1: 'clump'}).
                 If provided, num_classes is derived from its length. If None, inferred from checkpoint.
             model_type: Identifier for the detector backbone to instantiate.
+            compile_mode (str or False): Torch compile mode. Options:
+                - "default": Fast compilation, good performance
+                - "reduce-overhead": Optimized for small batches, uses CUDA graphs
+                - "max-autotune": Slowest compilation, best runtime performance
+                - False: Disable torch.compile entirely
         """
         assert 0 <= overlap_ratio < 1, "overlap_ratio must be in [0, 1)."
         assert patch_size > 0, "patch_size must be positive."
         assert temporal_buffer_size > 0, "temporal_buffer_size must be positive."
         assert batch_size > 0, "batch_size must be positive."
         assert 0 < mask_threshold < 1, "mask_threshold must be in (0, 1)."
+
+        # Validate compile_mode
+        if compile_mode not in self.VALID_COMPILE_MODES:
+            raise ValueError(
+                f"Invalid compile_mode: {compile_mode}. "
+                f"Must be one of: {self.VALID_COMPILE_MODES}"
+            )
 
         self.device = get_device()
         if self.device.type == "mps":
@@ -129,10 +145,9 @@ class ScSegmenter(BaseModel):
 
         # IMPORTANT: skip torch.compile on MPS due to torch.fx symbolic tracing
         # conflicts with ThreadPoolExecutor in parallel processing.
-        if self.device.type != "mps":
-            # Compile the inner model for optimized inference
+        if compile_mode and self.device.type != "mps":
             self.model.model.model = torch.compile(
-                self.model.model.model, mode="max-autotune"
+                self.model.model.model, mode=compile_mode
             )
 
     def predict(

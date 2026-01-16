@@ -82,7 +82,7 @@ class ASCT_focusRestoration(BasePipeline):
 
         # 1. Read Image:
         device = get_device()
-        is_cuda = device == torch.device("cuda")
+        is_cuda = device.type == "cuda"
         movie_name = remove_file_extension(name)
         name = movie_name
         # Desync analysis to avoid RAM/VRAM issues

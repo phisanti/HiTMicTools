@@ -67,7 +67,7 @@ class ASCT_scsegm(BasePipeline):
 
         # 1. Read Image:
         device = get_device()
-        is_cuda = device == torch.device("cuda")
+        is_cuda = device.type == "cuda"
         movie_name = remove_file_extension(name)
         name = movie_name
         img_logger = self.setup_logger(self.output_path, movie_name)
@@ -109,46 +109,6 @@ class ASCT_scsegm(BasePipeline):
                 ref_channel=0, ref_slice=-1, crop_image=True, reference_type="dynamic"
             )
             img_logger.info("2.1 - Frame alignment completed", show_memory=True)
-        # Update size x and size y after alignment and maybe crop
-        size_x, size_y = ip.img.shape[-2], ip.img.shape[-1]
-        img_logger.info("2.1 - Detecting and fixing border wells")
-        ip.detect_fix_well(nchannels=0, nslices=0, nframes=range(nFrames))
-        img_logger.info(
-            f"Reference channel intensity before background removal:\n{self.check_px_values(ip, reference_channel, round=3)}"
-        )
-
-        self.clear_background(
-            ip,
-            channel=reference_channel,
-            nFrames=range(nFrames),
-            method=method,
-            pixel_size=pixel_size,
-        )
-        self.clear_background(
-            ip, channel=pi_channel, nFrames=range(nFrames), method=method
-        )
-
-        # 2.2 Focus restoration (conditional)
-        if getattr(self, 'focus_correction', True):  # Default to True for backward compatibility
-            img_logger.info(
-                "2.2 - Restoring focus in the reference channel", show_memory=True
-            )
-            img_logger.info(
-                f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
-            )
-            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
-                ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
-                    ip.img[:, 0, reference_channel],
-                    rescale=False,
-                    batch_size=1,
-                    buffer_steps=4,
-                    buffer_dim=-1,
-                    sw_batch_size=1,
-                )
-            img_logger.info("2.2 - Restoring focus in the PI channel", show_memory=True)
-            img_logger.info(
-                f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
-            )
             with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
                 ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
                     ip.img[:, 0, pi_channel],

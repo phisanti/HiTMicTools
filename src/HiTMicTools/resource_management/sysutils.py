@@ -35,15 +35,31 @@ def empty_gpu_cache(device: Optional[torch.device] = None) -> None:
             torch.mps.empty_cache()
 
 
-def get_device() -> torch.device:
+def get_device(gpu_index: Optional[int] = 0) -> torch.device:
     """
     Detects the available GPU device.
 
+    Args:
+        gpu_index (int, optional): GPU index to use for CUDA devices. Defaults to 0.
+            Only applies when CUDA is available. For single GPU systems, 0 is used.
+            For multi-GPU systems, specify the desired GPU index (0, 1, 2, etc.).
+
     Returns:
         torch.device: The device to be used for inference.
+            - Returns "cuda:N" where N is the gpu_index if CUDA is available
+            - Returns "mps" if MPS (Apple Silicon) is available
+            - Returns "cpu" as fallback
     """
     if torch.cuda.is_available():
-        return torch.device("cuda")
+        # Explicitly specify GPU index for better multi-GPU compatibility
+        # This works on both single GPU (cuda:0) and multi-GPU systems (cuda:0, cuda:1, etc.)
+        effective_index = 0 if gpu_index is None else gpu_index
+        if effective_index >= torch.cuda.device_count():
+            raise ValueError(
+                f"GPU index {effective_index} is out of range. "
+                f"Available GPUs: {torch.cuda.device_count()}"
+            )
+        return torch.device(f"cuda:{effective_index}")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     else:
@@ -74,12 +90,7 @@ def get_memory_usage(
     divisor = 1024 * 1024 if unit == "MB" else 1024 * 1024 * 1024
 
     if device is None:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
+        device = get_device()
 
     if device.type == "cuda":
         free_mem, total_mem = torch.cuda.mem_get_info(device)

@@ -50,7 +50,7 @@ class OOF_detection(BasePipeline):
         """Run OOF detection and standard cell quantification on the first frame."""
 
         device = get_device()
-        is_cuda = device == torch.device("cuda")
+        is_cuda = device.type == "cuda"
         movie_name = remove_file_extension(name)
         logger = self.setup_logger(self.output_path, movie_name)
         logger.info(f"Start OOF analysis for {movie_name}")

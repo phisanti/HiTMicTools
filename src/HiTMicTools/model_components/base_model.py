@@ -19,11 +19,15 @@ class BaseModel:
         cleanup(): Frees GPU memory and performs garbage collection.
     """
 
+    # Valid compile modes for torch.compile
+    VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
+
     def get_model(
         self,
         path: str,
         model_graph: torch.nn.Module = None,
         device: torch.device = None,
+        compile_mode: str = False,
     ) -> torch.nn.Module:
         """
         Loads a model from the specified path and returns it.
@@ -32,6 +36,11 @@ class BaseModel:
             path (str): The path to the model file.
             device (str): The device to load the model onto.
             model_graph (Optional[torch.nn.Module]): An optional pre-initialized model graph.
+            compile_mode (str or False): Torch compile mode. Options:
+                - "default": Fast compilation, good performance
+                - "reduce-overhead": Optimized for small batches, uses CUDA graphs
+                - "max-autotune": Slowest compilation, best runtime performance
+                - False: Disable torch.compile entirely
 
         Returns:
             torch.nn.Module: The loaded model.
@@ -44,6 +53,13 @@ class BaseModel:
 
         if device is None:
             device = get_device()
+
+        # Validate compile_mode
+        if compile_mode not in self.VALID_COMPILE_MODES:
+            raise ValueError(
+                f"Invalid compile_mode: {compile_mode}. "
+                f"Must be one of: {self.VALID_COMPILE_MODES}"
+            )
 
         try:
             if model_graph is None:
@@ -63,8 +79,8 @@ class BaseModel:
             model.to(device)
             # IMPORTANT: skip torch.compile on MPS due to torch.fx symbolic tracing
             # conflicts with ThreadPoolExecutor in parallel processing.
-            if device.type != "mps":
-                model = torch.compile(model, mode="max-autotune")
+            if compile_mode and device.type != "mps":
+                model = torch.compile(model, mode=compile_mode)
 
             return model
 

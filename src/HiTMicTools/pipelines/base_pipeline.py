@@ -182,28 +182,31 @@ class BasePipeline(ABC):
                 )
             model_configs = read_metadata(config_dic["model_metadata"])
 
+        # Get compile_mode from pipeline config (defaults to False = no compilation)
+        compile_mode = getattr(self, "compile_models", False)
+
         if model_type == "segmentator":
             model_graph = monai_unet(**model_configs["model_args"])
             self.image_segmentator = Segmentator(
-                model_path, model_graph=model_graph, **config_dic["inferer_args"]
+                model_path, model_graph=model_graph, compile_mode=compile_mode, **config_dic["inferer_args"]
             )
             self.main_logger.info(f"Loaded model: segmentation (Monai UNet)")
         elif model_type == "cell-classifier":
             model_graph = FlexResNet(**model_configs["model_args"])
             self.object_classifier = CellClassifier(
-                model_path, model_graph=model_graph, **config_dic["model_args"]
+                model_path, model_graph=model_graph, compile_mode=compile_mode, **config_dic["model_args"]
             )
             self.main_logger.info(f"Loaded model: cell_classifier (FlexResNet)")
         elif model_type == "focus-restorer-fl":
             model_graph = NAFNet(**model_configs["model_args"])
             self.fl_focus_restorer = FocusRestorer(
-                model_path, model_graph=model_graph, **config_dic["inferer_args"]
+                model_path, model_graph=model_graph, compile_mode=compile_mode, **config_dic["inferer_args"]
             )
             self.main_logger.info(f"Loaded model: fl_focus (NAFNet)")
         elif model_type == "focus-restorer-bf":
             model_graph = NAFNet(**model_configs["model_args"])
             self.bf_focus_restorer = FocusRestorer(
-                model_path, model_graph=model_graph, **config_dic["inferer_args"]
+                model_path, model_graph=model_graph, compile_mode=compile_mode, **config_dic["inferer_args"]
             )
             self.main_logger.info(f"Loaded model: bf_focus (NAFNet)")
         elif model_type == "pi-classifier":
@@ -213,6 +216,7 @@ class BasePipeline(ABC):
             self.oof_detector = OofDetector(
                 model_path,
                 model_type=model_configs.get("model_type", "rfdetrbase"),
+                compile_mode=compile_mode,
                 **config_dic.get("inferer_args", {}),
             )
             self.oof_class_map = config_dic.get("inferer_args", {}).get("class_dict")
@@ -221,6 +225,7 @@ class BasePipeline(ABC):
             self.sc_segmenter = ScSegmenter(
                 model_path,
                 model_type=model_configs.get("model_type", "rfdetrsegpreview"),
+                compile_mode=compile_mode,
                 **config_dic.get("inferer_args", {}),
             )
             self.class_dict = config_dic.get("inferer_args", {}).get("class_dict")
@@ -417,11 +422,21 @@ class BasePipeline(ABC):
         self.align_frames = align_frames
         self.method = method
 
+    # Valid compile modes for torch.compile
+    VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
+
     def load_config_dict(self, config_dict: Dict) -> None:
         """Configure image analysis settings from a dictionary.
 
         Args:
             config_dict: Dictionary containing configuration parameters
+                - reference_channel (int): Reference channel index
+                - align_frames (bool): Whether to align frames
+                - method (str): Background correction method
+                - focus_correction (bool): Whether to apply focus correction
+                - compile_models (str or False, optional): Torch compile mode.
+                    Options: "default", "reduce-overhead", "max-autotune", or False.
+                    Defaults to "max-autotune".
 
         Raises:
             ValueError: If required keys are missing or have invalid types
@@ -435,9 +450,24 @@ class BasePipeline(ABC):
             if not isinstance(config_dict[key], expected_type):
                 raise ValueError(f"Invalid type for {key}. Expected {expected_type}")
 
+        # Validate compile_models if provided (default: False = no compilation)
+        compile_mode = config_dict.get("compile_models", False)
+        if compile_mode not in self.VALID_COMPILE_MODES:
+            raise ValueError(
+                f"Invalid compile_models: {compile_mode}. "
+                f"Must be one of: {self.VALID_COMPILE_MODES}"
+            )
+        config_dict["compile_models"] = compile_mode
+
         # Set attributes
         for key, value in config_dict.items():
             setattr(self, key, value)
+
+        # Log compile mode
+        if compile_mode:
+            self.main_logger.info(f"Models will be compiled with mode: {compile_mode}")
+        else:
+            self.main_logger.info("Models will not be compiled (compile_models: false)")
 
     def get_files(
         self,

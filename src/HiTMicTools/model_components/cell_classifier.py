@@ -46,6 +46,7 @@ class CellClassifier(BaseModel):
         device: torch.device = get_device(),
         classes: Optional[Dict[int, str]] = None,
         batch_size: int = 1024,
+        compile_mode: str = False,
     ):
         """
         Instantiate the CPU/memory-friendly classifier and load the serialized weights.
@@ -57,6 +58,11 @@ class CellClassifier(BaseModel):
             device: Torch device (CPU/CUDA/MPS) the classifier runs on.
             classes: Optional mapping from numeric predictions to string labels.
             batch_size: Number of ROIs handled per inference step.
+            compile_mode (str or False): Torch compile mode. Options:
+                - "default": Fast compilation, good performance
+                - "reduce-overhead": Optimized for small batches, uses CUDA graphs
+                - "max-autotune": Slowest compilation, best runtime performance
+                - False: Disable torch.compile entirely
         """
         # Safety checks
         assert min_size is None or (isinstance(min_size, int) and min_size > 0), (
@@ -72,7 +78,7 @@ class CellClassifier(BaseModel):
         self.batch_size = batch_size
         self.min_size = min_size
         self.device = device
-        self.classifier = self.get_model(model_path, model_graph, device)
+        self.classifier = self.get_model(model_path, model_graph, device, compile_mode=compile_mode)
         self.classes = classes
 
     def classify_rois(

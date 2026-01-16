@@ -1,7 +1,7 @@
 import logging
 import torch
 
-from .sysutils import get_memory_usage
+from .sysutils import get_memory_usage, get_device
 
 GPUTIL_AVAILABLE = torch.cuda.is_available()
 
@@ -43,7 +43,7 @@ class MemoryLogger(logging.Logger):
         if cuda:
             if GPUTIL_AVAILABLE:
                 try:
-                    cuda_device = torch.device("cuda")
+                    cuda_device = get_device()
                     vram_used = get_memory_usage(
                         device=cuda_device, free=True, unit="GB", as_string=False
                     )
