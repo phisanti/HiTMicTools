@@ -1,0 +1,1256 @@
+import warnings
+import math
+from contextlib import nullcontext
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import supervision as sv
+import torch
+import torch.nn.functional as F
+from torchvision.ops import box_iou
+
+from rfdetr import RFDETRSegPreview
+
+from HiTMicTools.model_components.base_model import BaseModel
+from HiTMicTools.resource_management.sysutils import get_device
+
+
+@dataclass
+class SegmentationBatch:
+    """Container used internally to keep track of tile metadata during inference."""
+
+    tiles: List[torch.Tensor]
+    offsets: List[Tuple[int, int]]
+    valid_shapes: List[Tuple[int, int]]
+    image_shape: Tuple[int, int]
+
+
+class ScSegmenterNMSOptim(BaseModel):
+    """
+    Optimized single-cell instance segmenter with supervision.Detections output support.
+
+    This is an enhanced version of ScSegmenter that returns detections in the
+    supervision library format for easier quality assessment and evaluation.
+
+    Key improvements over ScSegmenter:
+    - Returns sv.Detections object containing merged predictions after NMS
+    - Enables proper IoU-based quality metrics
+    - Maintains backward compatibility with array-based output
+
+    This class handles high-resolution microscopy frames by tiling them into
+    RF-DETR-sized crops, forwarding each crop through the detector, and merging
+    the results with batched NMS to recover full-frame instance segmentations.
+
+    Unlike the OofDetector, this model returns both bounding boxes and instance masks,
+    performing simultaneous detection, segmentation, and classification of single cells.
+
+    Attributes:
+        model: RF-DETR segmentation model instance
+        device: Torch device (CPU/CUDA)
+        tile_size: Square tile edge length for sliding window
+        overlap_ratio: Fractional overlap between adjacent tiles
+        score_threshold: Minimum confidence for detections
+        nms_iou: IoU threshold for non-maximum suppression
+        clump_merge_iou: IoU threshold for union-based clump merging
+        class_dict: Mapping from class indices to class names
+    """
+
+    # Class constant for per-tile normalization
+    NORMALIZATION_EPSILON = 1e-6  # Prevent division by zero in per-tile normalization
+
+    # Valid compile modes for torch.compile
+    VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
+
+    def __init__(
+        self,
+        model_path: str,
+        patch_size: int = 256,
+        overlap_ratio: float = 0.25,
+        score_threshold: float = 0.5,
+        nms_iou: float = 0.5,
+        clump_merge_iou: float = 0.5,
+        clump_merge_min_overlap: int = 10,
+        temporal_buffer_size: int = 8,
+        batch_size: int = 32,
+        mask_threshold: float = 0.5,
+        class_dict: Optional[dict] = None,
+        model_type: str = "rfdetrsegpreview",
+        compile_mode: str = False,
+    ) -> None:
+        """
+        Initialize the single-cell segmenter.
+
+        Args:
+            model_path: Filesystem path to a RF-DETR checkpoint (.pth).
+            patch_size: Square tile edge length passed to RF-DETR.
+            overlap_ratio: Fractional overlap between adjacent tiles.
+            score_threshold: Minimum confidence kept from per-tile detections.
+            nms_iou: IoU threshold for the cross-class non-maximum suppression.
+            clump_merge_iou: IoU threshold for union-based merging of clump detections.
+                Clumps with IoU >= this threshold are merged by taking union of boxes
+                and masks. Higher values (0.5-0.7) are more conservative, lower values
+                (0.3-0.5) merge more aggressively. Default: 0.5.
+            clump_merge_min_overlap: Minimum absolute mask overlap in pixels for clump merging.
+                Clumps are merged if EITHER IoU >= clump_merge_iou OR mask overlap
+                >= clump_merge_min_overlap pixels. Uses actual mask intersection (not bbox).
+                This handles large clumps spanning multiple tiles where IoU might be low
+                despite significant overlap. Default: 10 pixels.
+            temporal_buffer_size: Number of frames to process in GPU memory at once.
+            batch_size: Number of spatial tiles to process in parallel per batch.
+            mask_threshold: Binary threshold for converting predicted masks to instance labels.
+            class_dict: Dictionary mapping class indices to names (e.g., {0: 'single-cell', 1: 'clump'}).
+                If provided, num_classes is derived from its length. If None, inferred from checkpoint.
+            model_type: Identifier for the detector backbone to instantiate.
+            compile_mode (str or False): Torch compile mode. Options:
+                - "default": Fast compilation, good performance
+                - "reduce-overhead": Optimized for small batches, uses CUDA graphs
+                - "max-autotune": Slowest compilation, best runtime performance
+                - False: Disable torch.compile entirely
+        """
+        assert 0 <= overlap_ratio < 1, "overlap_ratio must be in [0, 1)."
+        assert patch_size > 0, "patch_size must be positive."
+        assert temporal_buffer_size > 0, "temporal_buffer_size must be positive."
+        assert batch_size > 0, "batch_size must be positive."
+        assert 0 < mask_threshold < 1, "mask_threshold must be in (0, 1)."
+
+        # Validate compile_mode
+        if compile_mode not in self.VALID_COMPILE_MODES:
+            raise ValueError(
+                f"Invalid compile_mode: {compile_mode}. "
+                f"Must be one of: {self.VALID_COMPILE_MODES}"
+            )
+
+        self.device = get_device()
+        if self.device.type == "mps":
+            warnings.warn(
+                "ScSegmenter falling back to CPU because RF-DETR backbone "
+                "uses ops unsupported on MPS.",
+                RuntimeWarning,
+            )
+            self.device = torch.device("cpu")
+
+        self.tile_size = patch_size
+        self.overlap_ratio = overlap_ratio
+        self.score_threshold = score_threshold
+        self.nms_iou = nms_iou
+        self.clump_merge_iou = clump_merge_iou
+        self.clump_merge_min_overlap = clump_merge_min_overlap
+        self.temporal_buffer_size = temporal_buffer_size
+        self.batch_size = batch_size
+        self.mask_threshold = mask_threshold
+        self.class_dict = class_dict
+
+        # Track raw detection counts for statistics
+        self.last_raw_detection_count = 0
+
+        if model_type.lower() != "rfdetrsegpreview":
+            raise ValueError(
+                f"Unsupported segmenter type '{model_type}'. "
+                "Currently only 'rfdetrsegpreview' is supported."
+            )
+
+        # Determine num_classes from class_dict or infer from checkpoint
+        num_classes = None
+        if class_dict:
+            num_classes = len(class_dict)
+        else:
+            checkpoint = torch.load(
+                model_path, map_location="cpu", weights_only=False
+            )
+            class_bias = checkpoint["model"]["class_embed.bias"]
+            num_classes = class_bias.shape[0] - 1
+
+        self.model = RFDETRSegPreview(
+            pretrain_weights=model_path,
+            num_classes=num_classes,
+            device=self.device.type,
+        )
+        # RFDETR keeps its own device bookkeeping; make sure the model graph
+        # is in eval mode to prevent dropout/batch-norm updates.
+        self.model.model.model.eval()
+
+        # IMPORTANT: skip torch.compile on MPS due to torch.fx symbolic tracing
+        # conflicts with ThreadPoolExecutor in parallel processing.
+        if compile_mode and self.device.type != "mps":
+            self.model.model.model = torch.compile(
+                self.model.model.model, mode=compile_mode
+            )
+
+    def predict(
+        self,
+        image: Union[np.ndarray, torch.Tensor],
+        channel_index: int = 0,
+        temporal_buffer_size: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        normalize_to_255: bool = True,
+        score_threshold: Optional[float] = None,
+        output_shape: str = "HW",
+        return_detections: bool = False,
+    ) -> Union[
+        Tuple[np.ndarray, List[np.ndarray], List[np.ndarray], List[np.ndarray]],
+        Tuple[np.ndarray, Union[sv.Detections, List[sv.Detections]]]
+    ]:
+        """
+        Run 4D sliding-window inference with temporal buffering on microscopy images.
+
+        This method efficiently processes time-series microscopy data by:
+        1. Loading temporal chunks into GPU memory (controlled by temporal_buffer_size)
+        2. Interleaving spatial tiles from multiple frames for maximum GPU utilization
+        3. Processing tiles in batches with cross-frame batching
+        4. Releasing processed frames from GPU to manage memory
+
+        The method automatically handles both single-frame and multi-frame inputs,
+        and performs channel padding (grayscale → RGB) internally.
+
+        Args:
+            image: Input array with shape:
+                - [T, H, W]: Multi-frame grayscale (most common from pipelines)
+                - [T, C, H, W]: Multi-frame multi-channel
+                - [H, W]: Single frame grayscale
+                - [C, H, W]: Single frame multi-channel
+            channel_index: Channel to segment (default: 0 for grayscale)
+            temporal_buffer_size: Number of frames to keep in GPU memory at once.
+                If None, uses value from initialization. Larger values increase GPU
+                memory usage but reduce CPU↔GPU transfers.
+                Recommended: 4-8 for typical workloads, 2-4 for memory-constrained GPUs.
+            batch_size: Number of spatial tiles to process in parallel.
+                If None, uses value from initialization. Larger values improve GPU
+                utilization but increase memory usage.
+                Recommended: 16-32 for typical GPUs.
+            normalize_to_255: Whether to min-max normalize the selected channel
+                to [0, 1] range. Set to False if image is already preprocessed.
+            score_threshold: Optional override for detection confidence threshold.
+                If None, uses the threshold set during initialization.
+            output_shape: Output dimension ordering for masks. Options:
+                - "HW": Height × Width (default, standard image convention)
+                - "WH": Width × Height (HiTMicTools TSCXY convention compatibility)
+                For multi-frame output, this applies to the last two dimensions of [T, *, *]
+            return_detections: If True, return sv.Detections objects instead of separate arrays.
+                Useful for quality assessment and evaluation workflows (default: False for backward compatibility)
+
+        Returns:
+            If return_detections=False (default, backward compatible):
+                Tuple of:
+                    - labeled_masks: [T, H, W] or [T, W, H] array of stacked instance masks
+                      (or [H, W]/[W, H] for single frame), depending on output_shape parameter
+                    - bboxes_list: List of [N_t, 4] bbox arrays per frame (xyxy format)
+                    - class_ids_list: List of [N_t] class ID arrays per frame
+                    - scores_list: List of [N_t] confidence score arrays per frame
+
+            If return_detections=True:
+                Tuple of:
+                    - labeled_masks: Same as above
+                    - detections: sv.Detections object (single frame) or List[sv.Detections] (multi-frame)
+                      containing merged predictions after NMS with xyxy boxes, class_ids, confidence scores,
+                      and instance masks
+
+        Examples:
+            >>> # Multi-frame input with HW output (standard)
+            >>> frames = ip.img[:, 0, 0, :, :]  # Shape: [T, H, W]
+            >>> masks, bboxes, classes, scores = segmenter.predict(
+            ...     frames,
+            ...     channel_index=0,
+            ...     temporal_buffer_size=8,
+            ...     batch_size=32,
+            ...     normalize_to_255=False,
+            ...     output_shape="HW"  # Returns [T, H, W]
+            ... )
+
+            >>> # Multi-frame input with WH output (HiTMicTools TSCXY compatibility)
+            >>> frames = ip.img[:, 0, 0, :, :]  # Shape: [T, X, Y] in TSCXY convention
+            >>> masks, bboxes, classes, scores = segmenter.predict(
+            ...     frames,
+            ...     output_shape="WH"  # Returns [T, X, Y] matching ip.img convention
+            ... )
+
+            >>> # Single frame input (backward compatible)
+            >>> frame = ip.img[0, 0, 0, :, :]  # Shape: [H, W]
+            >>> mask, bboxes, classes, scores = segmenter.predict(
+            ...     frame,
+            ...     temporal_buffer_size=1,
+            ...     batch_size=32
+            ... )
+        """
+        # Use provided values or fall back to instance attributes
+        buffer_size = temporal_buffer_size if temporal_buffer_size is not None else self.temporal_buffer_size
+        batch_size = batch_size if batch_size is not None else self.batch_size
+        threshold = score_threshold if score_threshold is not None else self.score_threshold
+
+        # Validate parameters
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive.")
+        if buffer_size <= 0:
+            raise ValueError("temporal_buffer_size must be positive.")
+        if output_shape not in ["HW", "WH"]:
+            raise ValueError(f"output_shape must be 'HW' or 'WH', got '{output_shape}'")
+
+        # 1. Prepare input - convert to [T, H, W] format
+        if isinstance(image, np.ndarray):
+            image = torch.from_numpy(image)
+
+        image, is_single_frame = self._reshape_input(image, channel_index)
+
+        # 2. Process in temporal buffers
+        num_frames = image.shape[0]
+        all_labeled_masks = []
+        all_bboxes = []
+        all_class_ids = []
+        all_scores = []
+
+        effective_buffer = min(max(1, num_frames), buffer_size)
+
+        for buffer_start in range(0, num_frames, effective_buffer):
+            buffer_end = min(buffer_start + effective_buffer, num_frames)
+
+            # Load temporal buffer to GPU
+            buffer_frames = image[buffer_start:buffer_end].to(self.device)
+
+            # Process frames in the buffer with cross-frame tile batching
+            buffer_results = self._process_temporal_buffer(
+                buffer_frames,
+                batch_size=batch_size,
+                normalize_to_255=normalize_to_255,
+                score_threshold=threshold,
+            )
+
+            # Aggregate results
+            for labeled_mask, bboxes, class_ids, scores in buffer_results:
+                all_labeled_masks.append(labeled_mask)
+                all_bboxes.append(bboxes)
+                all_class_ids.append(class_ids)
+                all_scores.append(scores)
+
+            # Explicitly free buffer from GPU
+            del buffer_frames
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+
+        # 3. Format and return output
+        formatted_output = self._format_output(
+            all_labeled_masks,
+            all_bboxes,
+            all_class_ids,
+            all_scores,
+            is_single_frame,
+            output_shape,
+            return_detections,
+        )
+        return formatted_output
+
+    def _extract_masks_from_labeled(
+        self,
+        labeled_mask: np.ndarray,
+        n_instances: int,
+    ) -> np.ndarray:
+        """
+        Extract individual binary masks from a labeled mask array.
+
+        Args:
+            labeled_mask: [H, W] or [W, H] array with integer labels (0=background, 1-N=instances)
+            n_instances: Expected number of instances
+
+        Returns:
+            Binary masks array of shape [N, H, W] where N <= n_instances
+            Returns empty array if no instances found
+        """
+        if labeled_mask.size == 0 or n_instances == 0:
+            return np.zeros((0, *labeled_mask.shape), dtype=bool)
+
+        # Get unique instance labels (excluding background=0)
+        unique_labels = np.unique(labeled_mask)
+        unique_labels = unique_labels[unique_labels > 0]
+
+        if len(unique_labels) == 0:
+            return np.zeros((0, *labeled_mask.shape), dtype=bool)
+
+        # Extract binary mask for each instance
+        masks = np.zeros((len(unique_labels), *labeled_mask.shape), dtype=bool)
+        for idx, label in enumerate(unique_labels):
+            masks[idx] = (labeled_mask == label)
+
+        return masks
+
+    def _reshape_input(
+        self,
+        image: torch.Tensor,
+        channel_index: int,
+    ) -> Tuple[torch.Tensor, bool]:
+        """
+        Reshape input image to [T, H, W] format and detect if single frame.
+
+        Args:
+            image: Input tensor with variable dimensions
+            channel_index: Channel to extract if multi-channel
+
+        Returns:
+            Tuple of:
+                - image: [T, H, W] tensor ready for processing
+                - is_single_frame: Boolean indicating if input was a single frame
+
+        Raises:
+            ValueError: If input dimensions are not 2D, 3D, or 4D
+            IndexError: If channel_index is out of bounds
+        """
+        is_single_frame = False
+        image = image.squeeze()
+
+        if image.ndim == 2:
+            # [H, W] → [1, 1, H, W]
+            image = image.unsqueeze(0).unsqueeze(0)
+            is_single_frame = True
+        elif image.ndim == 3:
+            # Could be [C, H, W] or [T, H, W]
+            # Assume [T, H, W] (most common from pipelines)
+            # If user has [C, H, W], they should use channel_index appropriately
+            image = image.unsqueeze(1)  # [T, H, W] → [T, 1, H, W]
+            if image.shape[0] == 1:
+                is_single_frame = True
+        elif image.ndim == 4:
+            # [T, C, H, W] - already in correct format
+            if image.shape[0] == 1:
+                is_single_frame = True
+        else:
+            raise ValueError(
+                f"Unsupported image dimensions: expected 2D, 3D, or 4D input, got shape {image.shape}."
+            )
+
+        # Validate channel index
+        num_channels = image.shape[1]
+        if channel_index >= num_channels:
+            raise IndexError(
+                f"channel_index {channel_index} out of bounds for image with {num_channels} channels."
+            )
+
+        # Extract target channel: [T, C, H, W] → [T, H, W]
+        image = image[:, channel_index, :, :].to(dtype=torch.float32)
+
+        return image, is_single_frame
+
+    def _format_output(
+        self,
+        all_labeled_masks: List[np.ndarray],
+        all_bboxes: List[np.ndarray],
+        all_class_ids: List[np.ndarray],
+        all_scores: List[np.ndarray],
+        is_single_frame: bool,
+        output_shape: str,
+        return_detections: bool = False,
+    ) -> Union[
+        Tuple[np.ndarray, Union[np.ndarray, List[np.ndarray]],
+              Union[np.ndarray, List[np.ndarray]], Union[np.ndarray, List[np.ndarray]]],
+        Tuple[np.ndarray, Union[sv.Detections, List[sv.Detections]]]
+    ]:
+        """
+        Format output masks and detections based on single/multi-frame and output_shape.
+
+        Args:
+            all_labeled_masks: List of [H, W] masks from each frame
+            all_bboxes: List of bbox arrays from each frame
+            all_class_ids: List of class ID arrays from each frame
+            all_scores: List of score arrays from each frame
+            is_single_frame: Whether input was a single frame
+            output_shape: "HW" or "WH" dimension ordering
+            return_detections: If True, return sv.Detections instead of separate arrays
+
+        Returns:
+            If return_detections=False:
+                Tuple of:
+                    - labeled_masks: Single mask [H/W, W/H] or stacked [T, H/W, W/H]
+                    - bboxes: Single array or list of arrays
+                    - class_ids: Single array or list of arrays
+                    - scores: Single array or list of arrays
+            If return_detections=True:
+                Tuple of:
+                    - labeled_masks: Same as above
+                    - detections: sv.Detections or List[sv.Detections]
+        """
+        if is_single_frame:
+            # Return single frame format
+            mask = all_labeled_masks[0]
+            if output_shape == "WH":
+                mask = mask.T  # [H, W] → [W, H]
+
+            if return_detections:
+                # Extract individual masks from labeled_mask
+                instance_masks = self._extract_masks_from_labeled(mask, len(all_scores[0]))
+                detections = sv.Detections(
+                    xyxy=all_bboxes[0],
+                    confidence=all_scores[0],
+                    class_id=all_class_ids[0].astype(np.int32),
+                    mask=instance_masks if instance_masks.size > 0 else None,
+                )
+                return mask, detections
+            else:
+                return mask, all_bboxes[0], all_class_ids[0], all_scores[0]
+        else:
+            # Stack masks for multi-frame output
+            stacked_masks = np.stack(all_labeled_masks, axis=0)  # [T, H, W]
+            if output_shape == "WH":
+                # Transpose last two dimensions: [T, H, W] → [T, W, H]
+                stacked_masks = np.transpose(stacked_masks, (0, 2, 1))
+
+            if return_detections:
+                # Create list of sv.Detections objects, one per frame
+                detections_list = []
+                for frame_idx, (labeled_mask, bboxes, class_ids, scores) in enumerate(
+                    zip(all_labeled_masks, all_bboxes, all_class_ids, all_scores)
+                ):
+                    # Extract individual masks from labeled_mask
+                    instance_masks = self._extract_masks_from_labeled(labeled_mask, len(scores))
+                    detections = sv.Detections(
+                        xyxy=bboxes,
+                        confidence=scores,
+                        class_id=class_ids.astype(np.int32),
+                        mask=instance_masks if instance_masks.size > 0 else None,
+                    )
+                    detections_list.append(detections)
+                return stacked_masks, detections_list
+            else:
+                return stacked_masks, all_bboxes, all_class_ids, all_scores
+
+    def _process_temporal_buffer(
+        self,
+        buffer_frames: torch.Tensor,
+        batch_size: int,
+        normalize_to_255: bool,
+        score_threshold: float,
+    ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+        """
+        Process a temporal buffer of frames with cross-frame tile batching.
+
+        This method implements the advanced batching strategy:
+        1. Pre-tiles all frames in the buffer
+        2. Interleaves tiles from different frames for efficient GPU batching
+        3. Processes tiles from multiple frames in the same batch
+        4. Demultiplexes detections back to their respective frames
+
+        This maximizes GPU utilization by allowing RF-DETR to process
+        tile_0_frame_0, tile_0_frame_1, ... tile_0_frame_N in the same batch.
+
+        Args:
+            buffer_frames: [B, H, W] tensor of frames to process
+            batch_size: Number of tiles to process in parallel
+            normalize_to_255: Whether to normalize frames
+            score_threshold: Detection confidence threshold
+
+        Returns:
+            List of (labeled_mask, bboxes, class_ids, scores) tuples, one per frame
+        """
+        buffer_size = buffer_frames.shape[0]
+        if buffer_size == 0:
+            return []
+
+        # 1. Prepare all frames and create tiles
+        all_batches = []
+        for frame_idx in range(buffer_size):
+            frame_tensor = self._prepare_frame_tensor(
+                buffer_frames[frame_idx],
+                normalize_to_255=normalize_to_255,
+            )
+            batch = self._create_tiles(frame_tensor)
+            all_batches.append(batch)
+
+        # 2. Interleave tiles from all frames for better batching
+        mega_tiles = []
+        tile_to_frame_map = []
+        max_tiles = max(len(batch.tiles) for batch in all_batches)
+        for tile_idx in range(max_tiles):
+            for frame_idx, batch in enumerate(all_batches):
+                if tile_idx < len(batch.tiles):
+                    mega_tiles.append(batch.tiles[tile_idx])
+                    tile_to_frame_map.append((frame_idx, tile_idx))
+
+        # 3. Process mega-batch with spatial batching
+        all_detections = []
+        use_autocast = self.device.type == "cuda"
+        autocast_cm = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if use_autocast
+            else nullcontext()
+        )
+
+        for start in range(0, len(mega_tiles), batch_size):
+            batch_tiles = mega_tiles[start : start + batch_size]
+
+            # Prepare batch with normalization and padding
+            tensor_batch_list, actual_count = self._prepare_batch(
+                batch_tiles, batch_size
+            )
+
+            if not tensor_batch_list:
+                continue
+
+            # Run inference with autocast
+            with autocast_cm:
+                predictions = self.model.predict(
+                    tensor_batch_list, threshold=score_threshold
+                )
+
+            if not isinstance(predictions, list):
+                predictions = [predictions]
+
+            # Remove padding predictions
+            if actual_count < len(predictions):
+                predictions = predictions[:actual_count]
+
+            all_detections.extend(predictions)
+
+        # 4. Demultiplex detections back to frames
+        frame_detections = [[] for _ in range(buffer_size)]
+        for detection, (frame_idx, _) in zip(all_detections, tile_to_frame_map):
+            frame_detections[frame_idx].append(detection)
+
+        # 5. Merge detections for each frame
+        results = []
+        for frame_idx, detections in enumerate(frame_detections):
+            batch = all_batches[frame_idx]
+            labeled_mask, boxes, class_ids, scores = self._merge_detections(
+                batch, detections
+            )
+            results.append((labeled_mask, boxes, class_ids, scores))
+
+        return results
+
+    def _prepare_frame_tensor(
+        self,
+        frame: torch.Tensor,
+        normalize_to_255: bool,
+    ) -> torch.Tensor:
+        """
+        Convert a single-channel frame to RGB tensor ready for RF-DETR.
+
+        Args:
+            frame: [H, W] tensor, single channel, float32
+            normalize_to_255: Whether to apply min-max normalization
+
+        Returns:
+            [3, H, W] tensor ready for RF-DETR inference
+        """
+        # Ensure frame is [1, H, W] for processing
+        if frame.ndim == 2:
+            frame = frame.unsqueeze(0)
+
+        # Apply min-max normalization if requested
+        if normalize_to_255:
+            frame = frame - frame.amin(dim=(-2, -1), keepdim=True)
+            max_val = frame.amax(dim=(-2, -1), keepdim=True)
+            frame = torch.where(
+                max_val > 0, frame / max_val, torch.zeros_like(frame)
+            )
+
+        # Pad grayscale to RGB (replicate channel 3 times)
+        frame = frame.repeat(3, 1, 1)  # [1, H, W] → [3, H, W]
+
+        # Verify values are in [0, 1] range as required by RF-DETR
+        if frame.max() > 1.0:
+            frame = frame.clamp(0, 1)
+
+        return frame
+
+    def _create_tiles(self, image_tensor: torch.Tensor) -> SegmentationBatch:
+        """Decompose full image into overlapping tiles for sliding-window inference."""
+        _, height, width = image_tensor.shape
+        padded_tensor = self._pad_if_needed(image_tensor)
+        _, padded_h, padded_w = padded_tensor.shape
+
+        step = max(int(self.tile_size * (1 - self.overlap_ratio)), 1)
+        x_positions = self._compute_positions(padded_w, step)
+        y_positions = self._compute_positions(padded_h, step)
+
+        tiles: List[torch.Tensor] = []
+        offsets: List[Tuple[int, int]] = []
+        valid_shapes: List[Tuple[int, int]] = []
+
+        for y in y_positions:
+            for x in x_positions:
+                crop = padded_tensor[
+                    :, y : y + self.tile_size, x : x + self.tile_size
+                ]
+                tiles.append(crop)
+
+                valid_h = min(self.tile_size, height - y) if y < height else 0
+                valid_w = min(self.tile_size, width - x) if x < width else 0
+                valid_shapes.append((max(valid_h, 0), max(valid_w, 0)))
+                offsets.append((x, y))
+
+        return SegmentationBatch(
+            tiles=tiles,
+            offsets=offsets,
+            valid_shapes=valid_shapes,
+            image_shape=(height, width),
+        )
+
+    def _pad_if_needed(self, tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Pad image with mean pixel value to ensure all tiles are exactly tile_size × tile_size.
+
+        This calculates padding needed so that the last tile position + tile_size
+        doesn't exceed the padded dimensions, preventing partial tiles.
+        """
+        _, height, width = tensor.shape
+        step = max(int(self.tile_size * (1 - self.overlap_ratio)), 1)
+
+        # Calculate the required padded dimensions
+        # We need to ensure that the last tile starting position + tile_size fits exactly
+        def calc_padded_size(length: int) -> int:
+            """Return the padded dimension so sliding window steps land exactly on tiles."""
+            if length <= self.tile_size:
+                return self.tile_size
+
+            # Calculate number of steps needed
+            num_steps = (length - self.tile_size + step - 1) // step
+            # Last position is at num_steps * step
+            last_position = num_steps * step
+            # Required size is last_position + self.tile_size
+            required_size = last_position + self.tile_size
+            return required_size
+
+        required_height = calc_padded_size(height)
+        required_width = calc_padded_size(width)
+
+        pad_bottom = required_height - height
+        pad_right = required_width - width
+
+        if pad_bottom == 0 and pad_right == 0:
+            return tensor
+
+        mean_value = tensor.mean()
+
+        return F.pad(
+            tensor,
+            (0, pad_right, 0, pad_bottom),
+            mode="constant",
+            value=mean_value.item(),
+        )
+
+    def _compute_positions(self, length: int, step: int) -> List[int]:
+        """Calculate tile starting positions along one dimension."""
+        if length <= self.tile_size:
+            return [0]
+
+        positions = list(range(0, length - self.tile_size + 1, step))
+        if positions[-1] != length - self.tile_size:
+            positions.append(length - self.tile_size)
+        return positions
+
+    def _prepare_batch(
+        self,
+        tiles: List[torch.Tensor],
+        target_batch_size: int,
+    ) -> Tuple[List[torch.Tensor], int]:
+        """
+        Prepare a batch of tiles for RF-DETR inference with normalization and padding.
+
+        This method handles three preprocessing steps:
+        1. Stacks tiles into a batch tensor and transfers to device
+        2. Normalizes each tile independently (per-tile min-max normalization)
+        3. Pads batch to target_batch_size for consistent GPU utilization
+        4. Converts to list format required by RF-DETR API
+
+        Args:
+            tiles: List of tile tensors with shape [3, H, W]
+            target_batch_size: Desired batch size (will pad if needed)
+
+        Returns:
+            Tuple of:
+                - List of normalized tensors ready for RF-DETR inference
+                - Number of actual (non-padded) tiles in batch
+        """
+        if not tiles:
+            return [], 0
+
+        # Stack and transfer to device
+        batch_tensor = torch.stack(tiles, dim=0).to(self.device, non_blocking=True)
+
+        # Per-tile normalization (each tile normalized independently)
+        tile_min = batch_tensor.amin(dim=(-2, -1), keepdim=True)
+        tile_max = batch_tensor.amax(dim=(-2, -1), keepdim=True)
+        tile_range = (tile_max - tile_min).clamp_min(self.NORMALIZATION_EPSILON)
+        batch_tensor = (batch_tensor - tile_min) / tile_range
+
+        # Pad batch to target size if needed
+        actual_count = batch_tensor.shape[0]
+        pad_count = max(0, target_batch_size - actual_count)
+
+        if pad_count > 0:
+            fill_value = batch_tensor.mean().item() if actual_count > 0 else 0.0
+            pad_tensor = torch.full(
+                (pad_count, 3, self.tile_size, self.tile_size),
+                fill_value,
+                dtype=batch_tensor.dtype,
+                device=batch_tensor.device,
+            )
+            batch_tensor = torch.cat([batch_tensor, pad_tensor], dim=0)
+
+        # Convert to list format for RF-DETR
+        tensor_batch_list = [img for img in batch_tensor]
+
+        return tensor_batch_list, actual_count
+
+    def _merge_detections(
+        self,
+        batch: SegmentationBatch,
+        detections: Sequence,
+        return_raw_count: bool = False,
+    ) -> Union[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+               Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]]:
+        """
+        Merge per-tile detections into a full-frame labeled mask and detection arrays.
+
+        This method implements class-specific merging strategies:
+        1. Collects all bounding boxes, scores, and classes from tiles
+        2. Adjusts coordinates to full-frame space
+        3. Separates clump detections (class 1) from other classes
+        4. Applies union-based merging to clumps (combines overlapping clumps)
+        5. Applies traditional NMS to non-clump classes (suppresses duplicates)
+        6. Combines results and stitches instance masks into a single labeled mask
+
+        The union-based merging for clumps prevents fragmentation of large bacterial
+        clusters that span multiple tiles, while traditional NMS is used for discrete
+        objects like single cells and debris.
+
+        Args:
+            batch: Segmentation batch with tile metadata
+            detections: Sequence of per-tile detection results
+            return_raw_count: If True, also return the raw detection count before merging
+
+        Returns:
+            labeled_mask, boxes, class_ids, scores[, raw_count]
+        """
+        boxes: List[torch.Tensor] = []
+        class_ids: List[torch.Tensor] = []
+        scores: List[torch.Tensor] = []
+        areas: List[torch.Tensor] = []
+        masks: List[torch.Tensor] = []
+        offsets_list: List[Tuple[int, int]] = []
+
+        for det, (offset_x, offset_y), (valid_h, valid_w) in zip(
+            detections, batch.offsets, batch.valid_shapes
+        ):
+            if det is None or len(det) == 0:
+                continue
+
+            tile_boxes = torch.from_numpy(det.xyxy)
+            tile_scores = torch.from_numpy(det.confidence)
+            tile_classes = torch.from_numpy(det.class_id)
+
+            # Adjust bounding box coordinates to full-frame space
+            tile_boxes[:, 0::2] += offset_x
+            tile_boxes[:, 1::2] += offset_y
+
+            # Clamp to valid region
+            if valid_h > 0 and valid_w > 0:
+                max_x = offset_x + valid_w
+                max_y = offset_y + valid_h
+                tile_boxes[:, 0::2] = tile_boxes[:, 0::2].clamp(max=max_x)
+                tile_boxes[:, 1::2] = tile_boxes[:, 1::2].clamp(max=max_y)
+
+            box_widths = (tile_boxes[:, 2] - tile_boxes[:, 0]).clamp(min=0)
+            box_heights = (tile_boxes[:, 3] - tile_boxes[:, 1]).clamp(min=0)
+            tile_box_areas = box_widths * box_heights
+            tile_area_values = tile_box_areas
+
+            if hasattr(det, "mask") and det.mask is not None and len(det.mask) > 0:
+                tile_masks = torch.from_numpy(det.mask)
+                masks.append(tile_masks)
+                offsets_list.extend([(offset_x, offset_y)] * len(tile_masks))
+
+                mask_binary = tile_masks > self.mask_threshold
+                mask_areas = mask_binary.flatten(1).sum(dim=1).float()
+                tile_area_values = torch.where(
+                    mask_areas > 0, mask_areas, tile_box_areas.float()
+                )
+
+            boxes.append(tile_boxes)
+            scores.append(tile_scores)
+            class_ids.append(tile_classes)
+            areas.append(tile_area_values.float())
+
+        if not boxes:
+            height, width = batch.image_shape
+            result = (
+                np.zeros((height, width), dtype=np.int32),
+                np.empty((0, 4), dtype=np.float32),
+                np.empty((0,), dtype=np.int64),
+                np.empty((0,), dtype=np.float32),
+            )
+            if return_raw_count:
+                return result + (0,)
+            return result
+
+        boxes_tensor = torch.cat(boxes, dim=0).float()
+        scores_tensor = torch.cat(scores, dim=0).float()
+        classes_tensor = torch.cat(class_ids, dim=0).long()
+        areas_tensor = torch.cat(areas, dim=0).float()
+
+        # Store raw detection count before merging/NMS
+        raw_detection_count = boxes_tensor.shape[0]
+        self.last_raw_detection_count = raw_detection_count
+
+        height, width = batch.image_shape
+        boxes_tensor[:, 0::2] = boxes_tensor[:, 0::2].clamp(0, width)
+        boxes_tensor[:, 1::2] = boxes_tensor[:, 1::2].clamp(0, height)
+        # Concatenate all masks once if they exist
+        masks_tensor = torch.cat(masks, dim=0) if masks else None
+        offsets_tensor = (
+            torch.tensor(offsets_list, dtype=torch.long)
+            if masks_tensor is not None and offsets_list
+            else None
+        )
+
+        # Separate clump detections (class 1) from other classes
+        clump_mask = classes_tensor == 1
+        non_clump_mask = ~clump_mask
+
+        clump_indices = torch.where(clump_mask)[0]
+        non_clump_indices = torch.where(non_clump_mask)[0]
+
+        # Process clumps with union-based merging (mask overlap in global coordinates)
+        if clump_indices.numel() > 0:
+            clump_boxes = boxes_tensor[clump_indices]
+            clump_scores = scores_tensor[clump_indices]
+            clump_masks_tensor = (
+                masks_tensor[clump_indices] if masks_tensor is not None else None
+            )
+            clump_offsets = (
+                offsets_tensor[clump_indices] if offsets_tensor is not None else None
+            )
+
+            if clump_masks_tensor is not None and clump_offsets is not None:
+                merged_clump_boxes, merged_clump_scores, merged_clump_masks, merged_clump_offsets = (
+                    self._union_merge_clumps(
+                        clump_boxes,
+                        clump_scores,
+                        clump_masks_tensor,
+                        clump_offsets,
+                    )
+                )
+            else:
+                merged_clump_boxes = clump_boxes
+                merged_clump_scores = clump_scores
+                merged_clump_masks = []
+                merged_clump_offsets = []
+        else:
+            merged_clump_boxes = torch.empty((0, 4), dtype=torch.float32)
+            merged_clump_scores = torch.empty((0,), dtype=torch.float32)
+            merged_clump_masks = []
+            merged_clump_offsets = []
+
+        # Process non-clumps with traditional NMS
+        if non_clump_indices.numel() > 0:
+            non_clump_boxes = boxes_tensor[non_clump_indices]
+            non_clump_scores = scores_tensor[non_clump_indices]
+            non_clump_areas = areas_tensor[non_clump_indices]
+
+            keep_indices_nms = self._cross_class_nms(
+                non_clump_boxes, non_clump_scores, non_clump_areas
+            )
+            kept_non_clump_indices = non_clump_indices[keep_indices_nms]
+            kept_non_clump_boxes = boxes_tensor[kept_non_clump_indices]
+            kept_non_clump_scores = scores_tensor[kept_non_clump_indices]
+            kept_non_clump_classes = classes_tensor[kept_non_clump_indices]
+
+            if masks_tensor is not None:
+                kept_non_clump_masks = [
+                    masks_tensor[i] for i in kept_non_clump_indices.tolist()
+                ]
+                kept_non_clump_offsets = [
+                    offsets_list[i] for i in kept_non_clump_indices.tolist()
+                ]
+            else:
+                kept_non_clump_masks = []
+                kept_non_clump_offsets = []
+        else:
+            kept_non_clump_boxes = torch.empty((0, 4), dtype=torch.float32)
+            kept_non_clump_scores = torch.empty((0,), dtype=torch.float32)
+            kept_non_clump_classes = torch.empty((0,), dtype=torch.long)
+            kept_non_clump_masks = []
+            kept_non_clump_offsets = []
+
+        clump_class_ids = torch.full(
+            (merged_clump_boxes.shape[0],), 1, dtype=classes_tensor.dtype
+        )
+        boxes_tensor_final = torch.cat([merged_clump_boxes, kept_non_clump_boxes], dim=0)
+        classes_tensor_final = torch.cat([clump_class_ids, kept_non_clump_classes], dim=0)
+        scores_tensor_final = torch.cat([merged_clump_scores, kept_non_clump_scores], dim=0)
+
+        boxes_np = boxes_tensor_final.numpy()
+        classes_np = classes_tensor_final.numpy()
+        scores_np = scores_tensor_final.numpy()
+
+        if masks_tensor is not None:
+            masks_for_stitching = []
+            offsets_for_stitching = []
+            if merged_clump_masks:
+                masks_for_stitching.extend(merged_clump_masks)
+                offsets_for_stitching.extend(merged_clump_offsets)
+            if kept_non_clump_masks:
+                masks_for_stitching.extend(kept_non_clump_masks)
+                offsets_for_stitching.extend(kept_non_clump_offsets)
+
+            labeled_mask, mask_to_detection_map = self._stitch_masks(
+                masks_for_stitching, offsets_for_stitching, batch.image_shape
+            )
+
+            if len(mask_to_detection_map) > 0:
+                classes_np = classes_np[mask_to_detection_map]
+                scores_np = scores_np[mask_to_detection_map]
+                boxes_np = boxes_np[mask_to_detection_map]
+        else:
+            labeled_mask = np.zeros(batch.image_shape, dtype=np.int32)
+
+
+
+        if return_raw_count:
+            return labeled_mask, boxes_np, classes_np, scores_np, raw_detection_count
+        return labeled_mask, boxes_np, classes_np, scores_np
+
+    def _cross_class_nms(
+        self, boxes: torch.Tensor, scores: torch.Tensor, areas: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Suppress overlapping detections across classes, preferring highest confidence.
+
+        Args:
+            boxes: [N, 4] tensor of XYXY boxes
+            scores: [N] tensor of confidence scores
+            areas: [N] tensor with instance areas (mask area preferred, bbox area fallback)
+
+        Returns:
+            Indices of detections kept after suppression.
+        """
+        num_instances = boxes.shape[0]
+        if num_instances == 0:
+            return torch.zeros((0,), dtype=torch.long, device=boxes.device)
+
+        # Prioritize higher-confidence detections, breaking ties with footprint size.
+        ordered_indices = sorted(
+            range(num_instances),
+            key=lambda idx: (scores[idx].item(), areas[idx].item()),
+            reverse=True,
+        )
+        order = torch.tensor(ordered_indices, dtype=torch.long, device=boxes.device)
+
+        keep: List[int] = []
+        while order.numel() > 0:
+            current = order[0]
+            keep.append(int(current))
+
+            if order.numel() == 1:
+                break
+
+            remaining = order[1:]
+            current_box = boxes[current].unsqueeze(0)
+            ious = box_iou(current_box, boxes[remaining]).squeeze(0)
+            suppress_mask = ious > self.nms_iou
+            remaining = remaining[~suppress_mask]
+            order = remaining
+
+        return torch.tensor(keep, dtype=torch.long, device=boxes.device)
+    def _union_merge_clumps(
+        self,
+        boxes: torch.Tensor,
+        scores: torch.Tensor,
+        masks: Optional[torch.Tensor],
+        offsets: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor], List[Tuple[int, int]]]:
+        """
+        Merge overlapping clump detections using mask overlap in global coordinates.
+
+        This method uses ONLY mask overlap (no IoU criterion) and computes overlap
+        in the full-frame coordinate system using tile offsets. The merged mask is
+        built in the union bounding box frame and stitched using its global offset.
+        """
+        num_clumps = boxes.shape[0]
+        if num_clumps == 0:
+            return boxes, scores, [], []
+
+        if masks is None or offsets is None:
+            return boxes, scores, [], []
+
+        mask_bins = masks > self.mask_threshold
+        offsets = offsets.to(torch.long)
+        min_overlap = max(1, int(self.clump_merge_min_overlap))
+
+        parent = list(range(num_clumps))
+
+        def find(idx: int) -> int:
+            while parent[idx] != idx:
+                parent[idx] = parent[parent[idx]]
+                idx = parent[idx]
+            return idx
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        mask_h, mask_w = mask_bins.shape[1], mask_bins.shape[2]
+
+        for i in range(num_clumps):
+            box_i = boxes[i]
+            off_ix = int(offsets[i, 0].item())
+            off_iy = int(offsets[i, 1].item())
+
+            for j in range(i + 1, num_clumps):
+                box_j = boxes[j]
+
+                x1 = max(box_i[0].item(), box_j[0].item())
+                y1 = max(box_i[1].item(), box_j[1].item())
+                x2 = min(box_i[2].item(), box_j[2].item())
+                y2 = min(box_i[3].item(), box_j[3].item())
+
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                if (x2 - x1) * (y2 - y1) < min_overlap:
+                    continue
+
+                gx1 = int(math.floor(x1))
+                gy1 = int(math.floor(y1))
+                gx2 = int(math.ceil(x2))
+                gy2 = int(math.ceil(y2))
+
+                off_jx = int(offsets[j, 0].item())
+                off_jy = int(offsets[j, 1].item())
+
+                ix1 = max(gx1 - off_ix, 0)
+                iy1 = max(gy1 - off_iy, 0)
+                ix2 = min(gx2 - off_ix, mask_w)
+                iy2 = min(gy2 - off_iy, mask_h)
+
+                jx1 = max(gx1 - off_jx, 0)
+                jy1 = max(gy1 - off_jy, 0)
+                jx2 = min(gx2 - off_jx, mask_w)
+                jy2 = min(gy2 - off_jy, mask_h)
+
+                w = min(ix2 - ix1, jx2 - jx1)
+                h = min(iy2 - iy1, jy2 - jy1)
+                if w <= 0 or h <= 0:
+                    continue
+
+                overlap = (
+                    mask_bins[i, iy1:iy1 + h, ix1:ix1 + w]
+                    & mask_bins[j, jy1:jy1 + h, jx1:jx1 + w]
+                ).sum().item()
+
+                if overlap >= min_overlap:
+                    union(i, j)
+
+        groups = {}
+        for idx in range(num_clumps):
+            root = find(idx)
+            groups.setdefault(root, []).append(idx)
+
+        merged_entries = []
+        for group in groups.values():
+            group_boxes = boxes[group]
+            x1 = int(math.floor(group_boxes[:, 0].min().item()))
+            y1 = int(math.floor(group_boxes[:, 1].min().item()))
+            x2 = int(math.ceil(group_boxes[:, 2].max().item()))
+            y2 = int(math.ceil(group_boxes[:, 3].max().item()))
+
+            union_h = max(1, y2 - y1)
+            union_w = max(1, x2 - x1)
+            union_mask = torch.zeros((union_h, union_w), dtype=torch.bool)
+
+            for idx in group:
+                off_x = int(offsets[idx, 0].item())
+                off_y = int(offsets[idx, 1].item())
+                mask_bin = mask_bins[idx]
+
+                gx1 = max(x1, off_x)
+                gy1 = max(y1, off_y)
+                gx2 = min(x2, off_x + mask_w)
+                gy2 = min(y2, off_y + mask_h)
+                if gx2 <= gx1 or gy2 <= gy1:
+                    continue
+
+                ux1 = gx1 - x1
+                uy1 = gy1 - y1
+                ux2 = gx2 - x1
+                uy2 = gy2 - y1
+
+                mx1 = gx1 - off_x
+                my1 = gy1 - off_y
+                mx2 = gx2 - off_x
+                my2 = gy2 - off_y
+
+                union_mask[uy1:uy2, ux1:ux2] |= mask_bin[my1:my2, mx1:mx2]
+
+            merged_box = torch.tensor([x1, y1, x2, y2], dtype=boxes.dtype)
+            merged_score = scores[group].mean()
+            merged_entries.append((merged_score.item(), merged_box, union_mask, (x1, y1)))
+
+        merged_entries.sort(key=lambda x: x[0], reverse=True)
+
+        merged_boxes = torch.stack([e[1] for e in merged_entries], dim=0)
+        merged_scores = torch.tensor([e[0] for e in merged_entries], dtype=scores.dtype)
+        merged_masks = [e[2] for e in merged_entries]
+        merged_offsets = [e[3] for e in merged_entries]
+
+        return merged_boxes, merged_scores, merged_masks, merged_offsets
+    def _stitch_masks(
+        self,
+        masks: Sequence[torch.Tensor],
+        offsets: List[Tuple[int, int]],
+        image_shape: Tuple[int, int],
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Stitch instance masks into a single full-frame labeled mask.
+
+        Args:
+            masks: Sequence of instance masks (each can have its own spatial size)
+            offsets: List of (x, y) offsets for each mask in full-frame coordinates
+            image_shape: (H, W) of the full frame
+
+        Returns:
+            labeled_mask: [H, W] array with unique integer labels per instance
+            mask_to_detection_map: [M] array mapping each unique mask instance
+                to its detection index in the input list
+        """
+        height, width = image_shape
+        labeled_mask = np.zeros((height, width), dtype=np.int32)
+
+        if isinstance(masks, torch.Tensor):
+            mask_list = [masks[i] for i in range(masks.shape[0])]
+        else:
+            mask_list = list(masks)
+
+        mask_to_detection_map = []
+
+        for detection_idx, (mask, (offset_x, offset_y)) in enumerate(
+            zip(mask_list, offsets)
+        ):
+            if mask is None:
+                continue
+
+            mask_np = mask.cpu().numpy()
+            mask_h, mask_w = mask_np.shape
+
+            y_start = int(offset_y)
+            y_end = min(int(offset_y) + mask_h, height)
+            x_start = int(offset_x)
+            x_end = min(int(offset_x) + mask_w, width)
+
+            mask_crop_h = y_end - y_start
+            mask_crop_w = x_end - x_start
+            if mask_crop_h <= 0 or mask_crop_w <= 0:
+                continue
+
+            mask_crop = mask_np[:mask_crop_h, :mask_crop_w]
+
+            binary_mask = mask_crop > self.mask_threshold
+            roi = labeled_mask[y_start:y_end, x_start:x_end]
+            new_pixels = binary_mask & (roi == 0)
+
+            if new_pixels.any():
+                label_id = len(mask_to_detection_map) + 1
+                labeled_mask[y_start:y_end, x_start:x_end] = np.where(
+                    new_pixels, label_id, roi
+                )
+                mask_to_detection_map.append(detection_idx)
+
+        return labeled_mask, np.array(mask_to_detection_map, dtype=np.int32)
+
