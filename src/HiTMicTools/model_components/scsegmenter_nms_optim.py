@@ -58,6 +58,7 @@ class ScSegmenterNMSOptim(BaseModel):
 
     # Class constant for per-tile normalization
     NORMALIZATION_EPSILON = 1e-6  # Prevent division by zero in per-tile normalization
+    PRIORITY_OVERLAP_FRACTION = 0.7  # Overwrite threshold for higher-priority masks
 
     # Valid compile modes for torch.compile
     VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
@@ -143,6 +144,7 @@ class ScSegmenterNMSOptim(BaseModel):
 
         # Track raw detection counts for statistics
         self.last_raw_detection_count = 0
+        self.last_after_clump_merge_count = 0
 
         if model_type.lower() != "rfdetrsegpreview":
             raise ValueError(
@@ -937,6 +939,10 @@ class ScSegmenterNMSOptim(BaseModel):
             merged_clump_masks = []
             merged_clump_offsets = []
 
+        # Track count after clump merging but before NMS
+        count_after_clump_merge = merged_clump_boxes.shape[0] + non_clump_indices.numel()
+        self.last_after_clump_merge_count = count_after_clump_merge
+
         # Process non-clumps with traditional NMS
         if non_clump_indices.numel() > 0:
             non_clump_boxes = boxes_tensor[non_clump_indices]
@@ -989,8 +995,27 @@ class ScSegmenterNMSOptim(BaseModel):
                 masks_for_stitching.extend(kept_non_clump_masks)
                 offsets_for_stitching.extend(kept_non_clump_offsets)
 
+            classes_for_stitching = []
+            if merged_clump_masks:
+                classes_for_stitching.extend([1] * len(merged_clump_masks))
+            if kept_non_clump_masks:
+                classes_for_stitching.extend([int(c) for c in kept_non_clump_classes.tolist()])
+
+            if masks_for_stitching:
+                priority = {1: 3, 2: 2, 0: 1}
+                order = sorted(
+                    range(len(classes_for_stitching)),
+                    key=lambda idx: priority.get(int(classes_for_stitching[idx]), 0),
+                )
+                masks_for_stitching = [masks_for_stitching[idx] for idx in order]
+                offsets_for_stitching = [offsets_for_stitching[idx] for idx in order]
+                classes_for_stitching = [classes_for_stitching[idx] for idx in order]
+                boxes_np = boxes_np[order]
+                classes_np = classes_np[order]
+                scores_np = scores_np[order]
+
             labeled_mask, mask_to_detection_map = self._stitch_masks(
-                masks_for_stitching, offsets_for_stitching, batch.image_shape
+                masks_for_stitching, offsets_for_stitching, classes_for_stitching, batch.image_shape
             )
 
             if len(mask_to_detection_map) > 0:
@@ -1195,20 +1220,15 @@ class ScSegmenterNMSOptim(BaseModel):
         self,
         masks: Sequence[torch.Tensor],
         offsets: List[Tuple[int, int]],
+        classes: Sequence[int],
         image_shape: Tuple[int, int],
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Stitch instance masks into a single full-frame labeled mask.
 
-        Args:
-            masks: Sequence of instance masks (each can have its own spatial size)
-            offsets: List of (x, y) offsets for each mask in full-frame coordinates
-            image_shape: (H, W) of the full frame
-
-        Returns:
-            labeled_mask: [H, W] array with unique integer labels per instance
-            mask_to_detection_map: [M] array mapping each unique mask instance
-                to its detection index in the input list
+        Higher-priority classes can overwrite lower-priority labels if the overlap
+        covers a sufficient fraction of the existing label. Priority order:
+        clump > debris > single-cell.
         """
         height, width = image_shape
         labeled_mask = np.zeros((height, width), dtype=np.int32)
@@ -1218,10 +1238,19 @@ class ScSegmenterNMSOptim(BaseModel):
         else:
             mask_list = list(masks)
 
-        mask_to_detection_map = []
+        classes_list = list(classes)
+        if len(classes_list) < len(mask_list):
+            classes_list.extend([0] * (len(mask_list) - len(classes_list)))
 
-        for detection_idx, (mask, (offset_x, offset_y)) in enumerate(
-            zip(mask_list, offsets)
+        class_priority = {1: 3, 2: 2, 0: 1}
+
+        label_class: List[int] = []
+        label_area: List[int] = []
+        label_detection_idx: List[int] = []
+        label_alive: List[bool] = []
+
+        for detection_idx, (mask, (offset_x, offset_y), class_id) in enumerate(
+            zip(mask_list, offsets, classes_list)
         ):
             if mask is None:
                 continue
@@ -1240,17 +1269,68 @@ class ScSegmenterNMSOptim(BaseModel):
                 continue
 
             mask_crop = mask_np[:mask_crop_h, :mask_crop_w]
-
             binary_mask = mask_crop > self.mask_threshold
+            if not binary_mask.any():
+                continue
+
             roi = labeled_mask[y_start:y_end, x_start:x_end]
-            new_pixels = binary_mask & (roi == 0)
+            overlap_labels = roi[binary_mask]
+            allowed_mask = binary_mask.copy()
+
+            if overlap_labels.size > 0:
+                incoming_priority = class_priority.get(int(class_id), 0)
+                for label_id in np.unique(overlap_labels):
+                    if label_id == 0:
+                        continue
+                    existing_class_id = label_class[label_id - 1]
+                    existing_priority = class_priority.get(existing_class_id, 0)
+
+                    label_mask = (roi == label_id) & binary_mask
+                    if not label_mask.any():
+                        continue
+
+                    if incoming_priority <= existing_priority:
+                        allowed_mask[label_mask] = False
+                        continue
+
+                    existing_area = label_area[label_id - 1]
+                    if existing_area <= 0:
+                        continue
+
+                    overlap_count = int(label_mask.sum())
+                    overlap_fraction = overlap_count / float(existing_area)
+                    if overlap_fraction >= self.PRIORITY_OVERLAP_FRACTION:
+                        labeled_mask[labeled_mask == label_id] = 0
+                        label_area[label_id - 1] = 0
+                        label_alive[label_id - 1] = False
+                    else:
+                        allowed_mask[label_mask] = False
+
+            roi = labeled_mask[y_start:y_end, x_start:x_end]
+            new_pixels = allowed_mask & (roi == 0)
 
             if new_pixels.any():
-                label_id = len(mask_to_detection_map) + 1
+                label_id = len(label_class) + 1
                 labeled_mask[y_start:y_end, x_start:x_end] = np.where(
                     new_pixels, label_id, roi
                 )
-                mask_to_detection_map.append(detection_idx)
+                label_class.append(int(class_id))
+                label_area.append(int(new_pixels.sum()))
+                label_detection_idx.append(detection_idx)
+                label_alive.append(True)
 
-        return labeled_mask, np.array(mask_to_detection_map, dtype=np.int32)
+        if any(not alive for alive in label_alive):
+            old_to_new = np.zeros(len(label_alive) + 1, dtype=np.int32)
+            new_detection_map = []
+            for idx, alive in enumerate(label_alive):
+                if alive:
+                    new_id = len(new_detection_map) + 1
+                    old_to_new[idx + 1] = new_id
+                    new_detection_map.append(label_detection_idx[idx])
+            labeled_mask = old_to_new[labeled_mask]
+            mask_to_detection_map = np.array(new_detection_map, dtype=np.int32)
+        else:
+            mask_to_detection_map = np.array(label_detection_idx, dtype=np.int32)
+
+        return labeled_mask, mask_to_detection_map
 
