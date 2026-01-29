@@ -52,13 +52,15 @@ class ScSegmenterNMSOptim(BaseModel):
         overlap_ratio: Fractional overlap between adjacent tiles
         score_threshold: Minimum confidence for detections
         nms_iou: IoU threshold for non-maximum suppression
-        clump_merge_iou: IoU threshold for union-based clump merging
         class_dict: Mapping from class indices to class names
     """
 
     # Class constant for per-tile normalization
     NORMALIZATION_EPSILON = 1e-6  # Prevent division by zero in per-tile normalization
     PRIORITY_OVERLAP_FRACTION = 0.7  # Overwrite threshold for higher-priority masks
+    PRIORITY_CLASS_NAMES = {1: "clump", 2: "debris", 0: "single-cell"}
+    PRIORITY_CLASS_ORDER = {1: 3, 2: 2, 0: 1}
+    # For our problem case it makes sense that clumps swallow everything.
 
     # Valid compile modes for torch.compile
     VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
@@ -70,7 +72,6 @@ class ScSegmenterNMSOptim(BaseModel):
         overlap_ratio: float = 0.25,
         score_threshold: float = 0.5,
         nms_iou: float = 0.5,
-        clump_merge_iou: float = 0.5,
         clump_merge_min_overlap: int = 10,
         temporal_buffer_size: int = 8,
         batch_size: int = 32,
@@ -88,15 +89,9 @@ class ScSegmenterNMSOptim(BaseModel):
             overlap_ratio: Fractional overlap between adjacent tiles.
             score_threshold: Minimum confidence kept from per-tile detections.
             nms_iou: IoU threshold for the cross-class non-maximum suppression.
-            clump_merge_iou: IoU threshold for union-based merging of clump detections.
-                Clumps with IoU >= this threshold are merged by taking union of boxes
-                and masks. Higher values (0.5-0.7) are more conservative, lower values
-                (0.3-0.5) merge more aggressively. Default: 0.5.
             clump_merge_min_overlap: Minimum absolute mask overlap in pixels for clump merging.
-                Clumps are merged if EITHER IoU >= clump_merge_iou OR mask overlap
-                >= clump_merge_min_overlap pixels. Uses actual mask intersection (not bbox).
-                This handles large clumps spanning multiple tiles where IoU might be low
-                despite significant overlap. Default: 10 pixels.
+                Clumps are merged if mask overlap >= clump_merge_min_overlap pixels.
+                Uses actual mask intersection (not bbox). Default: 10 pixels.
             temporal_buffer_size: Number of frames to process in GPU memory at once.
             batch_size: Number of spatial tiles to process in parallel per batch.
             mask_threshold: Binary threshold for converting predicted masks to instance labels.
@@ -135,7 +130,6 @@ class ScSegmenterNMSOptim(BaseModel):
         self.overlap_ratio = overlap_ratio
         self.score_threshold = score_threshold
         self.nms_iou = nms_iou
-        self.clump_merge_iou = clump_merge_iou
         self.clump_merge_min_overlap = clump_merge_min_overlap
         self.temporal_buffer_size = temporal_buffer_size
         self.batch_size = batch_size
@@ -1002,7 +996,7 @@ class ScSegmenterNMSOptim(BaseModel):
                 classes_for_stitching.extend([int(c) for c in kept_non_clump_classes.tolist()])
 
             if masks_for_stitching:
-                priority = {1: 3, 2: 2, 0: 1}
+                priority = self.PRIORITY_CLASS_ORDER
                 order = sorted(
                     range(len(classes_for_stitching)),
                     key=lambda idx: priority.get(int(classes_for_stitching[idx]), 0),
@@ -1044,33 +1038,43 @@ class ScSegmenterNMSOptim(BaseModel):
 
         Returns:
             Indices of detections kept after suppression.
+
+        Optimized with torch.argsort instead of Python sorted().
         """
         num_instances = boxes.shape[0]
         if num_instances == 0:
             return torch.zeros((0,), dtype=torch.long, device=boxes.device)
 
-        # Prioritize higher-confidence detections, breaking ties with footprint size.
-        ordered_indices = sorted(
-            range(num_instances),
-            key=lambda idx: (scores[idx].item(), areas[idx].item()),
-            reverse=True,
-        )
-        order = torch.tensor(ordered_indices, dtype=torch.long, device=boxes.device)
+        # Vectorized sorting: sort by scores (primary) with areas as tiebreaker
+        # Use stable sort: first sort by area (secondary key), then by score (primary key)
+        # torch.argsort is descending=True for highest first
+        area_order = torch.argsort(areas, descending=True, stable=True)
+        # Reorder scores by area, then sort by score (this gives us score-primary, area-secondary)
+        order = area_order[torch.argsort(scores[area_order], descending=True, stable=True)]
 
+        # Vectorized NMS loop with batch IoU computation
         keep: List[int] = []
-        while order.numel() > 0:
-            current = order[0]
-            keep.append(int(current))
+        suppressed = torch.zeros(num_instances, dtype=torch.bool, device=boxes.device)
 
-            if order.numel() == 1:
-                break
+        for i in range(num_instances):
+            idx = order[i].item()
+            if suppressed[idx]:
+                continue
 
-            remaining = order[1:]
-            current_box = boxes[current].unsqueeze(0)
-            ious = box_iou(current_box, boxes[remaining]).squeeze(0)
-            suppress_mask = ious > self.nms_iou
-            remaining = remaining[~suppress_mask]
-            order = remaining
+            keep.append(idx)
+
+            # Compute IoU with all remaining candidates at once
+            current_box = boxes[idx].unsqueeze(0)  # [1, 4]
+            # Only compute IoU for non-suppressed boxes to avoid redundant work
+            remaining_mask = ~suppressed
+            remaining_mask[idx] = False  # Exclude current
+
+            if remaining_mask.any():
+                remaining_indices = torch.nonzero(remaining_mask, as_tuple=True)[0]
+                ious = box_iou(current_box, boxes[remaining_indices]).squeeze(0)
+                # Mark overlapping boxes as suppressed
+                suppress_these = remaining_indices[ious > self.nms_iou]
+                suppressed[suppress_these] = True
 
         return torch.tensor(keep, dtype=torch.long, device=boxes.device)
     def _union_merge_clumps(
@@ -1086,6 +1090,8 @@ class ScSegmenterNMSOptim(BaseModel):
         This method uses ONLY mask overlap (no IoU criterion) and computes overlap
         in the full-frame coordinate system using tile offsets. The merged mask is
         built in the union bounding box frame and stitched using its global offset.
+
+        Optimized with vectorized bbox intersection to avoid O(N²) Python loops.
         """
         num_clumps = boxes.shape[0]
         if num_clumps == 0:
@@ -1097,72 +1103,115 @@ class ScSegmenterNMSOptim(BaseModel):
         mask_bins = masks > self.mask_threshold
         offsets = offsets.to(torch.long)
         min_overlap = max(1, int(self.clump_merge_min_overlap))
+        mask_h, mask_w = mask_bins.shape[1], mask_bins.shape[2]
 
+        # === VECTORIZED BBOX INTERSECTION ===
+        # Compute all pairwise bbox intersections at once using broadcasting
+        # boxes shape: [N, 4] where each row is [x1, y1, x2, y2]
+        # We need intersection between boxes[i] and boxes[j] for all i < j
+
+        # Extract coordinates for broadcasting
+        x1_all = boxes[:, 0]  # [N]
+        y1_all = boxes[:, 1]  # [N]
+        x2_all = boxes[:, 2]  # [N]
+        y2_all = boxes[:, 3]  # [N]
+
+        # Compute pairwise intersection coordinates using broadcasting
+        # [N, 1] op [1, N] -> [N, N]
+        inter_x1 = torch.maximum(x1_all.unsqueeze(1), x1_all.unsqueeze(0))  # [N, N]
+        inter_y1 = torch.maximum(y1_all.unsqueeze(1), y1_all.unsqueeze(0))  # [N, N]
+        inter_x2 = torch.minimum(x2_all.unsqueeze(1), x2_all.unsqueeze(0))  # [N, N]
+        inter_y2 = torch.minimum(y2_all.unsqueeze(1), y2_all.unsqueeze(0))  # [N, N]
+
+        # Compute intersection widths and heights (clamped to 0)
+        inter_w = (inter_x2 - inter_x1).clamp(min=0)  # [N, N]
+        inter_h = (inter_y2 - inter_y1).clamp(min=0)  # [N, N]
+        inter_area = inter_w * inter_h  # [N, N]
+
+        # === TILE ADJACENCY FILTERING ===
+        # Clumps can only overlap if their tiles are adjacent (within tile_size distance)
+        # This filters out pairs that cannot possibly have mask overlap
+        off_x = offsets[:, 0].float()  # [N]
+        off_y = offsets[:, 1].float()  # [N]
+
+        # Compute pairwise tile distances
+        tile_dist_x = torch.abs(off_x.unsqueeze(1) - off_x.unsqueeze(0))  # [N, N]
+        tile_dist_y = torch.abs(off_y.unsqueeze(1) - off_y.unsqueeze(0))  # [N, N]
+
+        # Adjacent tiles are within tile_size + some margin (masks can extend to tile edges)
+        max_tile_dist = self.tile_size + mask_w  # Conservative: allows for mask extent
+        adjacent_mask = (tile_dist_x <= max_tile_dist) & (tile_dist_y <= max_tile_dist)
+
+        # Find candidate pairs: upper triangle (i < j), has bbox intersection, tiles adjacent
+        # Only check upper triangle to avoid duplicate pairs
+        upper_tri = torch.triu(torch.ones(num_clumps, num_clumps, dtype=torch.bool), diagonal=1)
+        candidate_mask = upper_tri & (inter_area >= min_overlap) & adjacent_mask
+
+        # Get indices of candidate pairs
+        candidate_pairs = torch.nonzero(candidate_mask, as_tuple=False)  # [K, 2]
+
+        # === UNION-FIND WITH MASK OVERLAP CHECK ===
         parent = list(range(num_clumps))
 
         def find(idx: int) -> int:
-            while parent[idx] != idx:
-                parent[idx] = parent[parent[idx]]
-                idx = parent[idx]
-            return idx
+            root = idx
+            while parent[root] != root:
+                root = parent[root]
+            # Path compression
+            while parent[idx] != root:
+                next_idx = parent[idx]
+                parent[idx] = root
+                idx = next_idx
+            return root
 
         def union(a: int, b: int) -> None:
             ra, rb = find(a), find(b)
             if ra != rb:
                 parent[rb] = ra
 
-        mask_h, mask_w = mask_bins.shape[1], mask_bins.shape[2]
+        # Pre-extract offsets as numpy for faster indexing in loop
+        offsets_np = offsets.cpu().numpy()
 
-        for i in range(num_clumps):
-            box_i = boxes[i]
-            off_ix = int(offsets[i, 0].item())
-            off_iy = int(offsets[i, 1].item())
+        # Check mask overlap only for candidate pairs (much smaller than N²)
+        for pair_idx in range(candidate_pairs.shape[0]):
+            i = int(candidate_pairs[pair_idx, 0].item())
+            j = int(candidate_pairs[pair_idx, 1].item())
 
-            for j in range(i + 1, num_clumps):
-                box_j = boxes[j]
+            # Get precomputed intersection bounds (already computed above)
+            gx1 = int(math.floor(inter_x1[i, j].item()))
+            gy1 = int(math.floor(inter_y1[i, j].item()))
+            gx2 = int(math.ceil(inter_x2[i, j].item()))
+            gy2 = int(math.ceil(inter_y2[i, j].item()))
 
-                x1 = max(box_i[0].item(), box_j[0].item())
-                y1 = max(box_i[1].item(), box_j[1].item())
-                x2 = min(box_i[2].item(), box_j[2].item())
-                y2 = min(box_i[3].item(), box_j[3].item())
+            off_ix, off_iy = int(offsets_np[i, 0]), int(offsets_np[i, 1])
+            off_jx, off_jy = int(offsets_np[j, 0]), int(offsets_np[j, 1])
 
-                if x2 <= x1 or y2 <= y1:
-                    continue
+            # Compute local mask coordinates
+            ix1 = max(gx1 - off_ix, 0)
+            iy1 = max(gy1 - off_iy, 0)
+            ix2 = min(gx2 - off_ix, mask_w)
+            iy2 = min(gy2 - off_iy, mask_h)
 
-                if (x2 - x1) * (y2 - y1) < min_overlap:
-                    continue
+            jx1 = max(gx1 - off_jx, 0)
+            jy1 = max(gy1 - off_jy, 0)
+            jx2 = min(gx2 - off_jx, mask_w)
+            jy2 = min(gy2 - off_jy, mask_h)
 
-                gx1 = int(math.floor(x1))
-                gy1 = int(math.floor(y1))
-                gx2 = int(math.ceil(x2))
-                gy2 = int(math.ceil(y2))
+            w = min(ix2 - ix1, jx2 - jx1)
+            h = min(iy2 - iy1, jy2 - jy1)
+            if w <= 0 or h <= 0:
+                continue
 
-                off_jx = int(offsets[j, 0].item())
-                off_jy = int(offsets[j, 1].item())
+            # Compute actual mask overlap
+            overlap = (
+                mask_bins[i, iy1:iy1 + h, ix1:ix1 + w]
+                & mask_bins[j, jy1:jy1 + h, jx1:jx1 + w]
+            ).sum().item()
 
-                ix1 = max(gx1 - off_ix, 0)
-                iy1 = max(gy1 - off_iy, 0)
-                ix2 = min(gx2 - off_ix, mask_w)
-                iy2 = min(gy2 - off_iy, mask_h)
+            if overlap >= min_overlap:
+                union(i, j)
 
-                jx1 = max(gx1 - off_jx, 0)
-                jy1 = max(gy1 - off_jy, 0)
-                jx2 = min(gx2 - off_jx, mask_w)
-                jy2 = min(gy2 - off_jy, mask_h)
-
-                w = min(ix2 - ix1, jx2 - jx1)
-                h = min(iy2 - iy1, jy2 - jy1)
-                if w <= 0 or h <= 0:
-                    continue
-
-                overlap = (
-                    mask_bins[i, iy1:iy1 + h, ix1:ix1 + w]
-                    & mask_bins[j, jy1:jy1 + h, jx1:jx1 + w]
-                ).sum().item()
-
-                if overlap >= min_overlap:
-                    union(i, j)
-
+        # === BUILD MERGED GROUPS ===
         groups = {}
         for idx in range(num_clumps):
             root = find(idx)
@@ -1170,19 +1219,22 @@ class ScSegmenterNMSOptim(BaseModel):
 
         merged_entries = []
         for group in groups.values():
-            group_boxes = boxes[group]
-            x1 = int(math.floor(group_boxes[:, 0].min().item()))
-            y1 = int(math.floor(group_boxes[:, 1].min().item()))
-            x2 = int(math.ceil(group_boxes[:, 2].max().item()))
-            y2 = int(math.ceil(group_boxes[:, 3].max().item()))
+            group_tensor = torch.tensor(group, dtype=torch.long)
+            group_boxes = boxes[group_tensor]
+
+            # Vectorized min/max for union bbox
+            x1 = int(torch.floor(group_boxes[:, 0].min()).item())
+            y1 = int(torch.floor(group_boxes[:, 1].min()).item())
+            x2 = int(torch.ceil(group_boxes[:, 2].max()).item())
+            y2 = int(torch.ceil(group_boxes[:, 3].max()).item())
 
             union_h = max(1, y2 - y1)
             union_w = max(1, x2 - x1)
             union_mask = torch.zeros((union_h, union_w), dtype=torch.bool)
 
             for idx in group:
-                off_x = int(offsets[idx, 0].item())
-                off_y = int(offsets[idx, 1].item())
+                off_x = int(offsets_np[idx, 0])
+                off_y = int(offsets_np[idx, 1])
                 mask_bin = mask_bins[idx]
 
                 gx1 = max(x1, off_x)
@@ -1205,7 +1257,7 @@ class ScSegmenterNMSOptim(BaseModel):
                 union_mask[uy1:uy2, ux1:ux2] |= mask_bin[my1:my2, mx1:mx2]
 
             merged_box = torch.tensor([x1, y1, x2, y2], dtype=boxes.dtype)
-            merged_score = scores[group].mean()
+            merged_score = scores[group_tensor].mean()
             merged_entries.append((merged_score.item(), merged_box, union_mask, (x1, y1)))
 
         merged_entries.sort(key=lambda x: x[0], reverse=True)
@@ -1229,6 +1281,11 @@ class ScSegmenterNMSOptim(BaseModel):
         Higher-priority classes can overwrite lower-priority labels if the overlap
         covers a sufficient fraction of the existing label. Priority order:
         clump > debris > single-cell.
+
+        Optimized with:
+        - Batch mask conversion to numpy
+        - Vectorized overlap counting using bincount
+        - Deferred label removal (avoid full-image scans)
         """
         height, width = image_shape
         labeled_mask = np.zeros((height, width), dtype=np.int32)
@@ -1238,38 +1295,53 @@ class ScSegmenterNMSOptim(BaseModel):
         else:
             mask_list = list(masks)
 
+        if not mask_list:
+            return labeled_mask, np.array([], dtype=np.int32)
+
         classes_list = list(classes)
         if len(classes_list) < len(mask_list):
             classes_list.extend([0] * (len(mask_list) - len(classes_list)))
 
-        class_priority = {1: 3, 2: 2, 0: 1}
+        class_priority = self.PRIORITY_CLASS_ORDER
+        threshold = self.mask_threshold
+        priority_overlap_frac = self.PRIORITY_OVERLAP_FRACTION
+
+        # Pre-convert all torch masks to numpy (batch operation)
+        # and pre-binarize to avoid repeated threshold comparisons
+        mask_np_list = []
+        for mask in mask_list:
+            if mask is None:
+                mask_np_list.append(None)
+            elif isinstance(mask, torch.Tensor):
+                mask_np_list.append(mask.cpu().numpy())
+            else:
+                mask_np_list.append(np.asarray(mask))
 
         label_class: List[int] = []
         label_area: List[int] = []
         label_detection_idx: List[int] = []
-        label_alive: List[bool] = []
+        # Track labels to remove at end (avoid full-image scans during loop)
+        labels_to_remove: List[int] = []
 
-        for detection_idx, (mask, (offset_x, offset_y), class_id) in enumerate(
-            zip(mask_list, offsets, classes_list)
+        for detection_idx, (mask_np, (offset_x, offset_y), class_id) in enumerate(
+            zip(mask_np_list, offsets, classes_list)
         ):
-            if mask is None:
+            if mask_np is None:
                 continue
 
-            mask_np = mask.cpu().numpy()
             mask_h, mask_w = mask_np.shape
-
             y_start = int(offset_y)
-            y_end = min(int(offset_y) + mask_h, height)
+            y_end = min(y_start + mask_h, height)
             x_start = int(offset_x)
-            x_end = min(int(offset_x) + mask_w, width)
+            x_end = min(x_start + mask_w, width)
 
             mask_crop_h = y_end - y_start
             mask_crop_w = x_end - x_start
             if mask_crop_h <= 0 or mask_crop_w <= 0:
                 continue
 
-            mask_crop = mask_np[:mask_crop_h, :mask_crop_w]
-            binary_mask = mask_crop > self.mask_threshold
+            # Binarize mask (threshold applied once)
+            binary_mask = mask_np[:mask_crop_h, :mask_crop_w] > threshold
             if not binary_mask.any():
                 continue
 
@@ -1279,50 +1351,72 @@ class ScSegmenterNMSOptim(BaseModel):
 
             if overlap_labels.size > 0:
                 incoming_priority = class_priority.get(int(class_id), 0)
-                for label_id in np.unique(overlap_labels):
-                    if label_id == 0:
-                        continue
-                    existing_class_id = label_class[label_id - 1]
-                    existing_priority = class_priority.get(existing_class_id, 0)
 
-                    label_mask = (roi == label_id) & binary_mask
-                    if not label_mask.any():
-                        continue
+                # Use bincount for vectorized overlap counting
+                # This counts how many pixels of each label are overlapped
+                max_label = len(label_class)
+                if max_label > 0:
+                    # bincount gives counts for labels 0..max in overlap_labels
+                    overlap_counts = np.bincount(overlap_labels, minlength=max_label + 1)
 
-                    if incoming_priority <= existing_priority:
-                        allowed_mask[label_mask] = False
-                        continue
+                    # Process labels that have overlap (skip 0 = background)
+                    overlapping_labels = np.nonzero(overlap_counts[1:])[0] + 1
 
-                    existing_area = label_area[label_id - 1]
-                    if existing_area <= 0:
-                        continue
+                    for label_id in overlapping_labels:
+                        label_idx = label_id - 1
+                        # Skip already-removed labels
+                        if label_area[label_idx] <= 0:
+                            continue
 
-                    overlap_count = int(label_mask.sum())
-                    overlap_fraction = overlap_count / float(existing_area)
-                    if overlap_fraction >= self.PRIORITY_OVERLAP_FRACTION:
-                        labeled_mask[labeled_mask == label_id] = 0
-                        label_area[label_id - 1] = 0
-                        label_alive[label_id - 1] = False
-                    else:
-                        allowed_mask[label_mask] = False
+                        existing_priority = class_priority.get(label_class[label_idx], 0)
 
+                        # Build label mask only once per label
+                        label_mask = (roi == label_id) & binary_mask
+
+                        if incoming_priority <= existing_priority:
+                            allowed_mask[label_mask] = False
+                            continue
+
+                        existing_area = label_area[label_idx]
+                        overlap_count = overlap_counts[label_id]
+                        overlap_fraction = overlap_count / float(existing_area)
+
+                        if overlap_fraction >= priority_overlap_frac:
+                            # Mark for deferred removal (avoid full-image scan now)
+                            labels_to_remove.append(label_id)
+                            label_area[label_idx] = 0
+                        else:
+                            allowed_mask[label_mask] = False
+
+            # Re-fetch ROI in case we need updated view
             roi = labeled_mask[y_start:y_end, x_start:x_end]
             new_pixels = allowed_mask & (roi == 0)
 
             if new_pixels.any():
                 label_id = len(label_class) + 1
-                labeled_mask[y_start:y_end, x_start:x_end] = np.where(
-                    new_pixels, label_id, roi
-                )
+                roi[new_pixels] = label_id  # Direct assignment is faster than np.where
                 label_class.append(int(class_id))
                 label_area.append(int(new_pixels.sum()))
                 label_detection_idx.append(detection_idx)
-                label_alive.append(True)
 
-        if any(not alive for alive in label_alive):
-            old_to_new = np.zeros(len(label_alive) + 1, dtype=np.int32)
+        # Batch remove dead labels at the end (single pass through labeled_mask)
+        if labels_to_remove:
+            # Create removal mask: True for labels to remove
+            max_label = len(label_class)
+            remove_mask = np.zeros(max_label + 1, dtype=bool)
+            for label_id in labels_to_remove:
+                if label_id <= max_label:
+                    remove_mask[label_id] = True
+
+            # Single vectorized removal
+            labeled_mask[remove_mask[labeled_mask]] = 0
+
+        # Build final mapping: compact labels and map to detection indices
+        alive_mask = np.array([area > 0 for area in label_area], dtype=bool)
+        if not alive_mask.all():
+            old_to_new = np.zeros(len(label_area) + 1, dtype=np.int32)
             new_detection_map = []
-            for idx, alive in enumerate(label_alive):
+            for idx, alive in enumerate(alive_mask):
                 if alive:
                     new_id = len(new_detection_map) + 1
                     old_to_new[idx + 1] = new_id
