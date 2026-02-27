@@ -1,4 +1,8 @@
-import unittest, logging, io, sys, os
+import unittest
+import logging
+import io
+import sys
+import os
 from unittest.mock import patch, MagicMock, call
 
 sys.path.insert(

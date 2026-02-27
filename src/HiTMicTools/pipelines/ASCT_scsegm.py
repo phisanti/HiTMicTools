@@ -1,8 +1,7 @@
 import os
 import gc
 import tifffile
-from typing import Optional, List, Union
-import torch
+from typing import Optional, List
 import pandas as pd
 import numpy as np
 
@@ -23,7 +22,6 @@ from HiTMicTools.roianalysis import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 
 from jetraw_tools.image_reader import ImageReader
-import random
 
 
 class ASCT_scsegm(BasePipeline):
@@ -75,8 +73,6 @@ class ASCT_scsegm(BasePipeline):
         reference_channel = self.reference_channel
         pi_channel = self.pi_channel
         align_frames = self.align_frames
-        tracking = self.tracking
-        method = self.method
 
         img_logger.info("1 - Reading image", show_memory=True)
         image_reader = ImageReader(file_i, self.file_type)

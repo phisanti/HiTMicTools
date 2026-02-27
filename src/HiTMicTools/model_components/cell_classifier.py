@@ -5,16 +5,15 @@ import os
 import numpy as np
 from scipy import ndimage
 import torch
-import torch.nn.functional as F
 
 # Local imports
 from HiTMicTools.model_components.base_model import BaseModel
-from HiTMicTools.resource_management.sysutils import empty_gpu_cache, get_device
+from HiTMicTools.resource_management.sysutils import get_device
 from HiTMicTools.img_processing.img_ops import dynamic_resize_roi
 
 
 # Type hints
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 
 class CellClassifier(BaseModel):

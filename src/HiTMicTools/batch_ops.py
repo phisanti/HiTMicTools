@@ -1,6 +1,5 @@
 import os
 import math
-from pathlib import Path
 from typing import List, Optional
 
 
@@ -167,7 +166,7 @@ def generate_slurm_template(
             "conda init",
             f"conda activate {conda_env}",
             "",
-            f"# Change to working directory",
+            "# Change to working directory",
             f"cd '{work_dir}'",
             "",
         ]
@@ -185,7 +184,7 @@ def generate_slurm_template(
                 'echo "Analysis starts now"',
                 'echo "Processing file_block_${BLOCK_NUM}"',
                 "",
-                f"# Generate file blocks if they don't exist",
+                "# Generate file blocks if they don't exist",
                 f'if [ ! -d "{temp_dir}" ]; then',
                 f"    hitmictools split-files --target-folder . --n-blocks {n_blocks} --output-dir {temp_dir}",
                 "fi",

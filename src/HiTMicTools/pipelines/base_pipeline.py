@@ -6,7 +6,6 @@ import zipfile
 import tempfile
 import yaml
 import logging
-from logging.handlers import MemoryHandler
 
 # Resources imports
 import concurrent.futures
@@ -107,7 +106,7 @@ class BasePipeline(ABC):
 
         # Set up logger file
         logging.setLoggerClass(MemoryLogger)
-        last_folder = os.path.basename(os.path.normpath(name))
+        os.path.basename(os.path.normpath(name))
         log_file = os.path.join(output_path, f"{name}_{logger_id}_analysis.log")
         logger_name = f"{output_path}_{name}_{logger_id}"  # Use a unique identifier for each instance important for parallelisation
         logger = logging.getLogger(logger_name)
@@ -190,28 +189,28 @@ class BasePipeline(ABC):
             self.image_segmentator = Segmentator(
                 model_path, model_graph=model_graph, compile_mode=compile_mode, **config_dic["inferer_args"]
             )
-            self.main_logger.info(f"Loaded model: segmentation (Monai UNet)")
+            self.main_logger.info("Loaded model: segmentation (Monai UNet)")
         elif model_type == "cell-classifier":
             model_graph = FlexResNet(**model_configs["model_args"])
             self.object_classifier = CellClassifier(
                 model_path, model_graph=model_graph, compile_mode=compile_mode, **config_dic["model_args"]
             )
-            self.main_logger.info(f"Loaded model: cell_classifier (FlexResNet)")
+            self.main_logger.info("Loaded model: cell_classifier (FlexResNet)")
         elif model_type == "focus-restorer-fl":
             model_graph = NAFNet(**model_configs["model_args"])
             self.fl_focus_restorer = FocusRestorer(
                 model_path, model_graph=model_graph, compile_mode=compile_mode, **config_dic["inferer_args"]
             )
-            self.main_logger.info(f"Loaded model: fl_focus (NAFNet)")
+            self.main_logger.info("Loaded model: fl_focus (NAFNet)")
         elif model_type == "focus-restorer-bf":
             model_graph = NAFNet(**model_configs["model_args"])
             self.bf_focus_restorer = FocusRestorer(
                 model_path, model_graph=model_graph, compile_mode=compile_mode, **config_dic["inferer_args"]
             )
-            self.main_logger.info(f"Loaded model: bf_focus (NAFNet)")
+            self.main_logger.info("Loaded model: bf_focus (NAFNet)")
         elif model_type == "pi-classifier":
             self.pi_classifier = PIClassifier(model_path)
-            self.main_logger.info(f"Loaded model: pi_classification (scikit-learn)")
+            self.main_logger.info("Loaded model: pi_classification (scikit-learn)")
         elif model_type == "oof-detector":
             self.oof_detector = OofDetector(
                 model_path,
@@ -220,7 +219,7 @@ class BasePipeline(ABC):
                 **config_dic.get("inferer_args", {}),
             )
             self.oof_class_map = config_dic.get("inferer_args", {}).get("class_dict")
-            self.main_logger.info(f"Loaded model: oof_detector (RF-DETR)")
+            self.main_logger.info("Loaded model: oof_detector (RF-DETR)")
         elif model_type == "sc-segmenter":
             self.sc_segmenter = ScSegmenter(
                 model_path,
@@ -229,7 +228,7 @@ class BasePipeline(ABC):
                 **config_dic.get("inferer_args", {}),
             )
             self.class_dict = config_dic.get("inferer_args", {}).get("class_dict")
-            self.main_logger.info(f"Loaded model: sc_segmenter (RF-DETR Segmenter)")
+            self.main_logger.info("Loaded model: sc_segmenter (RF-DETR Segmenter)")
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 

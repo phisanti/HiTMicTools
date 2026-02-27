@@ -1,6 +1,6 @@
 # Standard library imports
 import json
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Tuple
 
 # Third-party library imports
 import numpy as np
@@ -17,8 +17,6 @@ from HiTMicTools.roianalysis.roi_utils import (
 )
 
 # Type hints
-from numpy.typing import NDArray
-from pandas import DataFrame, Series
 
 
 def coords_centroid(coords):

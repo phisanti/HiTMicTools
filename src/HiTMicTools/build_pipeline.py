@@ -16,7 +16,6 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
         worklist (str, optional): Path to the worklist file. Defaults to None.
     """
     # Initialize worklist_id and file_list
-    worklist_id = None
     c_reader = ConfReader(config_file)
     configs = c_reader.opt
 

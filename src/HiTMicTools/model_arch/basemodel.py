@@ -70,7 +70,7 @@ class UNET(nn.Module):
     ):
         super(UNET, self).__init__()
 
-        if features == None:
+        if features is None:
             features = [2**i for i in range(pooling_steps) if 2**i >= init_features]
         else:
             features = features

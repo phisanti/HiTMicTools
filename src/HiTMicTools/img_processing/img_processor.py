@@ -1,4 +1,3 @@
-import cv2
 import numpy as np
 import inspect
 from typing import Union, List, Optional, Dict, Tuple

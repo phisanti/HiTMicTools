@@ -107,17 +107,17 @@ class GPUDiagnostics:
         if verbose:
             ld_path = self.env_vars["LD_LIBRARY_PATH"]
             if ld_path:
-                print(f"  LD_LIBRARY_PATH:")
+                print("  LD_LIBRARY_PATH:")
                 for path in ld_path.split(':'):
                     if path.strip():
                         print(f"    - {path}")
             else:
-                print(f"  LD_LIBRARY_PATH: Not set")
+                print("  LD_LIBRARY_PATH: Not set")
 
         # nvidia-smi check
         print(f"\n{'NVIDIA Driver (nvidia-smi):':<40}")
         if self.nvidia_info["available"]:
-            print(f"  Status: Available")
+            print("  Status: Available")
             print(f"  Driver Version: {self.nvidia_info['driver_version']}")
             print(f"  CUDA Version (Driver): {self.nvidia_info['cuda_version']}")
             print(f"\n  Detected GPUs ({len(self.nvidia_info['gpus'])}):")
@@ -131,7 +131,7 @@ class GPUDiagnostics:
                 if gpu['utilization_percent']:
                     print(f"      Utilization: {gpu['utilization_percent']}%")
         else:
-            print(f"  Status: Not available")
+            print("  Status: Not available")
             print(f"  Error: {self.nvidia_info['error']}")
 
         # PyTorch CUDA check
@@ -144,7 +144,7 @@ class GPUDiagnostics:
             print(f"  cuDNN Version: {self.pytorch_info['cudnn_version']}")
             print(f"  GPU Count: {self.pytorch_info['gpu_count']}")
 
-            print(f"\n  PyTorch GPU Details:")
+            print("\n  PyTorch GPU Details:")
             for gpu in self.pytorch_info["gpus"]:
                 print(f"\n    GPU {gpu['index']}: {gpu['name']}")
                 print(f"      Compute Capability: {gpu['compute_capability']}")
@@ -154,11 +154,11 @@ class GPUDiagnostics:
                 print(f"      Multiprocessors: {gpu['multiprocessor_count']}")
 
             # Tensor test
-            print(f"\n  GPU Compute Test (tensor operations):")
+            print("\n  GPU Compute Test (tensor operations):")
             if self.pytorch_info["tensor_test"]["success"]:
-                print(f"    Status: PASSED - Successfully created and computed tensors on GPU")
+                print("    Status: PASSED - Successfully created and computed tensors on GPU")
             else:
-                print(f"    Status: FAILED")
+                print("    Status: FAILED")
                 print(f"    Error: {self.pytorch_info['tensor_test']['error']}")
         else:
             print(f"  Error: {self.pytorch_info['error']}")

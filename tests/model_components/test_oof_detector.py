@@ -1,5 +1,4 @@
 import unittest
-import numpy as np
 import torch
 from unittest.mock import patch, MagicMock
 from HiTMicTools.model_components.oof_detector import OofDetector
@@ -16,7 +15,7 @@ class TestOofDetectorInit(unittest.TestCase):
         mock_rfdetr.return_value = mock_model
         mock_compile.return_value = mock_model.model.model
 
-        detector = OofDetector(
+        OofDetector(
             model_path="/fake/path.pth",
             patch_size=560,
             class_dict={"oof": 0, "in_focus": 1},
@@ -48,7 +47,7 @@ class TestOofDetectorInit(unittest.TestCase):
         mock_rfdetr.return_value = mock_model
         mock_compile.return_value = mock_model.model.model
 
-        detector = OofDetector(
+        OofDetector(
             model_path="/fake/path.pth",
             patch_size=560,
         )

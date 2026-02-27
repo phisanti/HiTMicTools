@@ -1,7 +1,7 @@
 import os
 import gc
 import tifffile
-from typing import Optional, List, Union, Dict, Tuple
+from typing import Optional, List, Dict, Tuple
 import torch
 import pandas as pd
 import numpy as np
@@ -18,7 +18,7 @@ from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.img_processing.array_ops import convert_image
 from HiTMicTools.img_processing.img_ops import measure_background_intensity
 from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels
-from HiTMicTools.utils import get_timestamps, remove_file_extension
+from HiTMicTools.utils import remove_file_extension
 from HiTMicTools.roianalysis import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 
@@ -40,7 +40,6 @@ from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 
 
 from jetraw_tools.image_reader import ImageReader
-import random
 
 
 class ASCTImageProcessing(BasePipeline):
@@ -474,8 +473,8 @@ class ASCTImageProcessing(BasePipeline):
         # Handle TIFF files without OME metadata
         if metadata is None:
             logger.warning(
-                f"No OME metadata found (likely TIFF file). "
-                f"Extracting dimensions from image array. Using default pixel_size=1.0 µm."
+                "No OME metadata found (likely TIFF file). "
+                "Extracting dimensions from image array. Using default pixel_size=1.0 µm."
             )
             # Extract dimensions directly from array
             if img.ndim == 2:
@@ -498,7 +497,7 @@ class ASCTImageProcessing(BasePipeline):
             size_x = metadata.images[0].pixels.size_x
             size_y = metadata.images[0].pixels.size_y
             nChannels = metadata.images[0].pixels.size_c
-            nFrames = metadata.images[0].pixels.size_t
+            metadata.images[0].pixels.size_t
 
         # Normalize dimensions
         if img.ndim == 2:
@@ -590,7 +589,6 @@ class ASCTImageProcessing(BasePipeline):
 
                 # Try OME-TIFF metadata
                 if tif.is_ome:
-                    ome_metadata = tif.ome_metadata
                     # This would require parsing XML, skip for now
                     pass
 

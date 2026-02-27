@@ -4,8 +4,7 @@ import psutil
 import platform
 import sys
 import os
-import time
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 from logging import Logger
 
 # Assuming sysutils.py is in src/HiTMicTools/resource_management/
@@ -255,7 +254,7 @@ class TestSysUtils(unittest.TestCase):
         with patch(
             f"{sysutils_module.__name__}.get_memory_usage",
             return_value=mock_free_mem_val,
-        ) as mock_get_mem:
+        ):
             self.assertFalse(
                 wait_for_memory(
                     required_gb=realistic_required_gb,

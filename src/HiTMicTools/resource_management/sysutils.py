@@ -116,7 +116,7 @@ def get_system_info() -> str:
     mem_percent = memory.used / memory.total * 100
 
     cpu_model = platform.processor()
-    info = f"System Information:\n"
+    info = "System Information:\n"
     info += f"OS: {platform.system()} {platform.release()}\n"
     info += f"Python: {platform.python_version()} ({sys.executable})\n"
     info += f"CPU Model: {cpu_model}\n"
@@ -135,7 +135,7 @@ def get_system_info() -> str:
 
             info += f"GPU {i}: {props.name}\n"
             info += f"  Memory: {used_mem / (1024**3):.2f}GB used / {total_mem / (1024**3):.2f}GB total ({free_mem / (1024**3):.2f}GB free)\n"
-            info += f"  GPU utilization: Not available via PyTorch\n"
+            info += "  GPU utilization: Not available via PyTorch\n"
     else:
         info += "No GPUs detected\n"
 

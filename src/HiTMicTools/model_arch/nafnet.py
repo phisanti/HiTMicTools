@@ -290,7 +290,7 @@ if __name__ == "__main__":
 
     print(f"Output shape: {output.shape}")
 
-    print(f"printing final model")
+    print("printing final model")
     from torchsummary import summary
 
     summary(model, input_size=input_tensor)

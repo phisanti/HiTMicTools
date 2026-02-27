@@ -6,7 +6,6 @@ RoiAnalyser implementation. Focus is on code quality, not performance benchmarki
 
 import unittest
 import numpy as np
-import warnings
 from HiTMicTools.roianalysis.roi_analyser import RoiAnalyser
 
 
@@ -88,7 +87,7 @@ class TestRoiAnalyserBinaryMask(unittest.TestCase):
         analyser.create_binary_mask(threshold=0.8)
 
         # Count pixels above threshold
-        expected_count = np.sum(self.proba > 0.8)
+        np.sum(self.proba > 0.8)
         actual_count = np.sum(analyser.binary_mask)
 
         # Account for dimension expansion in proba_map
@@ -337,7 +336,7 @@ class TestRoiAnalyserMeasurements(unittest.TestCase):
         for idx, row in measurements.iterrows():
             frame = int(row['frame'])
             centroid_y = row['centroid_0']
-            centroid_x = row['centroid_1']
+            row['centroid_1']
 
             # Frame 0: blob at 20-30, centroid should be ~24.5
             # Frame 1: blob at 30-40, centroid should be ~34.5

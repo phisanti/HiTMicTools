@@ -1,7 +1,6 @@
 """Tests for model bundle creation functionality."""
 
 import os
-import sys
 import unittest
 import tempfile
 import shutil
@@ -9,7 +8,6 @@ import zipfile
 import yaml
 import json
 import datetime
-from pathlib import Path
 
 from HiTMicTools.model_bundler import create_model_bundle
 

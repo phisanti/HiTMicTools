@@ -3,7 +3,6 @@ from typing import List, Tuple, Union
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
-import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.cluster import KMeans
 from sklearn.cluster import DBSCAN

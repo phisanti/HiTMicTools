@@ -14,7 +14,6 @@ from HiTMicTools.img_processing.img_ops import (
     measure_background_intensity,
     dynamic_resize_roi,
 )
-from HiTMicTools.utils import round_to_odd, unit_converter  # Imported by img_ops
 
 
 class TestImgOps(unittest.TestCase):

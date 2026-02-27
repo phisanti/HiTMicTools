@@ -4,7 +4,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import torch
 
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.resource_management.reserveresource import ReserveResource

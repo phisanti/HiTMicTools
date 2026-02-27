@@ -1,23 +1,18 @@
 # Standard library imports
 import gc
-import json
 import os
-import sys
 
 # Third-party library imports
 import cupy as cp
 from scipy import ndimage
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from monai.networks.blocks import Convolution, ResidualUnit
 
 # Local imports
 from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.utils import empty_gpu_cache, get_device
 
 # Type hints
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 
 class CellClassifier(BaseModel):

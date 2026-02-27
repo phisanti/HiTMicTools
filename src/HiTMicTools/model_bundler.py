@@ -11,7 +11,6 @@ import zipfile
 import json
 import datetime
 from pathlib import Path
-from typing import Optional
 
 
 def create_model_bundle(

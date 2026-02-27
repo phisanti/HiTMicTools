@@ -4,7 +4,7 @@ import platform
 import time
 import tempfile
 import json
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Dict, Any
 from logging import Logger
 
 import psutil

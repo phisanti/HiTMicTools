@@ -11,8 +11,6 @@ from skimage.measure import find_contours, perimeter
 from skimage.morphology import convex_hull_image, skeletonize
 
 # Type hints
-from numpy.typing import NDArray
-from pandas import DataFrame, Series
 
 
 def summary_by(df: pd.DataFrame, summarise_by: str, variable: str) -> pd.DataFrame:

@@ -1,8 +1,7 @@
 import os
 import gc
 import tifffile
-from typing import Optional, List, Union, Dict
-import torch
+from typing import Optional, List
 import pandas as pd
 import numpy as np
 
@@ -40,9 +39,6 @@ from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
 
 
 from jetraw_tools.image_reader import ImageReader
-import psutil
-import time
-import random
 
 
 class ASCT_zaslavier(BasePipeline):
@@ -94,7 +90,6 @@ class ASCT_zaslavier(BasePipeline):
         pi_channel = self.pi_channel
         gfp_channel = getattr(self, "gfp_channel", None)
         align_frames = self.align_frames
-        tracking = self.tracking
         method = self.method
 
         img_logger.info("1 - Reading image", show_memory=True)

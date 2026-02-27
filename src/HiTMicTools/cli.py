@@ -2,7 +2,6 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Callable, Dict, Any
 from HiTMicTools.build_pipeline import build_and_run_pipeline
 
 

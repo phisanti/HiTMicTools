@@ -5,7 +5,7 @@ enabling code reuse between CPU and GPU implementations while maintaining perfor
 """
 
 import numpy as np
-from typing import Union, List, Any
+from typing import Any
 
 
 def get_array_module(arr: Any):
@@ -139,7 +139,6 @@ def validate_measurements_equivalence(measurements1, measurements2, rtol=1e-5, a
         >>> validate_measurements_equivalence(cpu_measurements, gpu_measurements)
         # Raises AssertionError if measurements differ
     """
-    import pandas as pd
 
     # Check shapes match
     assert measurements1.shape == measurements2.shape, (

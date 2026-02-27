@@ -1,6 +1,5 @@
 import unittest
 import numpy as np
-import itertools  # Used by stack_indexer in the source file
 
 # Assuming array_ops.py is in src/HiTMicTools/img_processing/
 # This import path needs to be correct based on how tests are run

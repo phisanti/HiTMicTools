@@ -5,7 +5,6 @@ import btrack
 
 from btrack.constants import BayesianUpdates
 from typing import Optional, Dict, Any, Tuple, List
-from pathlib import Path
 
 from .config_validator import TrackingConfigValidator
 from .config_loader import ConfigLoader
