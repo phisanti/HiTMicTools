@@ -1,19 +1,36 @@
+from __future__ import annotations
+
 import warnings
 import math
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import supervision as sv
 import torch
 import torch.nn.functional as F
-from torchvision.ops import box_iou
+from torchvision.ops import nms
+
+try:
+    import supervision as sv
+except ImportError:
+    sv = None
 
 from rfdetr import RFDETRSegPreview
 
 from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.resource_management.sysutils import get_device
+
+
+def _require_supervision():
+    """Load supervision only when detection objects are requested."""
+    if sv is None:
+        raise ImportError(
+            "return_detections=True requires the 'supervision' package. "
+            "Install it with: pip install supervision"
+        )
+    return sv
 
 
 @dataclass
@@ -61,6 +78,7 @@ class ScSegmenterNMSOptim(BaseModel):
     PRIORITY_CLASS_NAMES = {1: "clump", 2: "debris", 0: "single-cell"}
     PRIORITY_CLASS_ORDER = {1: 3, 2: 2, 0: 1}
     # For our problem case it makes sense that clumps swallow everything.
+    MIN_MASK_AREA = 5  # Minimum mask area in pixels to keep a detection
 
     # Valid compile modes for torch.compile
     VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
@@ -140,6 +158,16 @@ class ScSegmenterNMSOptim(BaseModel):
         self.last_raw_detection_count = 0
         self.last_after_clump_merge_count = 0
 
+        # Timing statistics (accumulated across frames, reset per image)
+        self.timing_stats = {
+            "inference": 0.0,
+            "collect_detections": 0.0,
+            "clump_merge": 0.0,
+            "nms": 0.0,
+            "stitch_masks": 0.0,
+            "total_merge": 0.0,
+        }
+
         if model_type.lower() != "rfdetrsegpreview":
             raise ValueError(
                 f"Unsupported segmenter type '{model_type}'. "
@@ -172,6 +200,28 @@ class ScSegmenterNMSOptim(BaseModel):
             self.model.model.model = torch.compile(
                 self.model.model.model, mode=compile_mode
             )
+
+    def reset_timing_stats(self) -> None:
+        """Reset all timing statistics to zero."""
+        for key in self.timing_stats:
+            self.timing_stats[key] = 0.0
+
+    def get_timing_report(self) -> str:
+        """Return a formatted string with timing breakdown."""
+        stats = self.timing_stats
+        total = stats["inference"] + stats["total_merge"]
+        if total == 0:
+            return "No timing data collected"
+
+        lines = [
+            f"  Inference:    {stats['inference']*1000:7.1f}ms ({100*stats['inference']/total:5.1f}%)",
+            f"  Post-process: {stats['total_merge']*1000:7.1f}ms ({100*stats['total_merge']/total:5.1f}%)",
+            f"    ├─ Collect:   {stats['collect_detections']*1000:7.1f}ms",
+            f"    ├─ ClumpMrg:  {stats['clump_merge']*1000:7.1f}ms",
+            f"    ├─ NMS:       {stats['nms']*1000:7.1f}ms",
+            f"    └─ Stitch:    {stats['stitch_masks']*1000:7.1f}ms",
+        ]
+        return "\n".join(lines)
 
     def predict(
         self,
@@ -463,14 +513,16 @@ class ScSegmenterNMSOptim(BaseModel):
         """
         if is_single_frame:
             # Return single frame format
-            mask = all_labeled_masks[0]
+            source_mask = all_labeled_masks[0]
+            mask = source_mask
             if output_shape == "WH":
                 mask = mask.T  # [H, W] → [W, H]
 
             if return_detections:
-                # Extract individual masks from labeled_mask
-                instance_masks = self._extract_masks_from_labeled(mask, len(all_scores[0]))
-                detections = sv.Detections(
+                sv_module = _require_supervision()
+                # Keep detection masks in HW to match bbox coordinates.
+                instance_masks = self._extract_masks_from_labeled(source_mask, len(all_scores[0]))
+                detections = sv_module.Detections(
                     xyxy=all_bboxes[0],
                     confidence=all_scores[0],
                     class_id=all_class_ids[0].astype(np.int32),
@@ -487,14 +539,15 @@ class ScSegmenterNMSOptim(BaseModel):
                 stacked_masks = np.transpose(stacked_masks, (0, 2, 1))
 
             if return_detections:
+                sv_module = _require_supervision()
                 # Create list of sv.Detections objects, one per frame
                 detections_list = []
-                for frame_idx, (labeled_mask, bboxes, class_ids, scores) in enumerate(
+                for labeled_mask, bboxes, class_ids, scores in (
                     zip(all_labeled_masks, all_bboxes, all_class_ids, all_scores)
                 ):
                     # Extract individual masks from labeled_mask
                     instance_masks = self._extract_masks_from_labeled(labeled_mask, len(scores))
-                    detections = sv.Detections(
+                    detections = sv_module.Detections(
                         xyxy=bboxes,
                         confidence=scores,
                         class_id=class_ids.astype(np.int32),
@@ -566,6 +619,7 @@ class ScSegmenterNMSOptim(BaseModel):
             else nullcontext()
         )
 
+        t_inference_start = time.perf_counter()
         for start in range(0, len(mega_tiles), batch_size):
             batch_tiles = mega_tiles[start : start + batch_size]
 
@@ -591,6 +645,8 @@ class ScSegmenterNMSOptim(BaseModel):
                 predictions = predictions[:actual_count]
 
             all_detections.extend(predictions)
+
+        self.timing_stats["inference"] += time.perf_counter() - t_inference_start
 
         # 4. Demultiplex detections back to frames
         frame_detections = [[] for _ in range(buffer_size)]
@@ -814,6 +870,9 @@ class ScSegmenterNMSOptim(BaseModel):
         Returns:
             labeled_mask, boxes, class_ids, scores[, raw_count]
         """
+        t_start_total = time.perf_counter()
+        t_start = time.perf_counter()
+
         boxes: List[torch.Tensor] = []
         class_ids: List[torch.Tensor] = []
         scores: List[torch.Tensor] = []
@@ -895,6 +954,8 @@ class ScSegmenterNMSOptim(BaseModel):
             else None
         )
 
+        self.timing_stats["collect_detections"] += time.perf_counter() - t_start
+
         # Separate clump detections (class 1) from other classes
         clump_mask = classes_tensor == 1
         non_clump_mask = ~clump_mask
@@ -902,6 +963,7 @@ class ScSegmenterNMSOptim(BaseModel):
         clump_indices = torch.where(clump_mask)[0]
         non_clump_indices = torch.where(non_clump_mask)[0]
 
+        t_start = time.perf_counter()
         # Process clumps with union-based merging (mask overlap in global coordinates)
         if clump_indices.numel() > 0:
             clump_boxes = boxes_tensor[clump_indices]
@@ -936,7 +998,9 @@ class ScSegmenterNMSOptim(BaseModel):
         # Track count after clump merging but before NMS
         count_after_clump_merge = merged_clump_boxes.shape[0] + non_clump_indices.numel()
         self.last_after_clump_merge_count = count_after_clump_merge
+        self.timing_stats["clump_merge"] += time.perf_counter() - t_start
 
+        t_start = time.perf_counter()
         # Process non-clumps with traditional NMS
         if non_clump_indices.numel() > 0:
             non_clump_boxes = boxes_tensor[non_clump_indices]
@@ -968,6 +1032,8 @@ class ScSegmenterNMSOptim(BaseModel):
             kept_non_clump_masks = []
             kept_non_clump_offsets = []
 
+        self.timing_stats["nms"] += time.perf_counter() - t_start
+
         clump_class_ids = torch.full(
             (merged_clump_boxes.shape[0],), 1, dtype=classes_tensor.dtype
         )
@@ -979,6 +1045,7 @@ class ScSegmenterNMSOptim(BaseModel):
         classes_np = classes_tensor_final.numpy()
         scores_np = scores_tensor_final.numpy()
 
+        t_start = time.perf_counter()
         if masks_tensor is not None:
             masks_for_stitching = []
             offsets_for_stitching = []
@@ -1016,10 +1083,28 @@ class ScSegmenterNMSOptim(BaseModel):
                 classes_np = classes_np[mask_to_detection_map]
                 scores_np = scores_np[mask_to_detection_map]
                 boxes_np = boxes_np[mask_to_detection_map]
+
+                # Recalculate bboxes from surviving mask pixels and get mask areas
+                # This ensures bboxes match the actual mask after priority stitching
+                boxes_np, mask_areas = self._recalculate_bboxes_from_mask(
+                    labeled_mask, len(mask_to_detection_map), return_areas=True
+                )
+
+                # Filter out tiny masks (< MIN_MASK_AREA pixels)
+                # These are fragments from partial swallowing that can't form valid polygons
+                keep_mask = mask_areas >= self.MIN_MASK_AREA
+                if not keep_mask.all():
+                    keep_indices = np.where(keep_mask)[0]
+                    boxes_np = boxes_np[keep_indices]
+                    classes_np = classes_np[keep_indices]
+                    scores_np = scores_np[keep_indices]
+                    # Relabel the mask to remove filtered labels and make consecutive
+                    labeled_mask = self._relabel_mask(labeled_mask, keep_mask)
         else:
             labeled_mask = np.zeros(batch.image_shape, dtype=np.int32)
 
-
+        self.timing_stats["stitch_masks"] += time.perf_counter() - t_start
+        self.timing_stats["total_merge"] += time.perf_counter() - t_start_total
 
         if return_raw_count:
             return labeled_mask, boxes_np, classes_np, scores_np, raw_detection_count
@@ -1031,6 +1116,9 @@ class ScSegmenterNMSOptim(BaseModel):
         """
         Suppress overlapping detections across classes, preferring highest confidence.
 
+        Uses torchvision.ops.nms for GPU-accelerated suppression. Area is used as a
+        tiebreaker when scores are equal (larger area wins).
+
         Args:
             boxes: [N, 4] tensor of XYXY boxes
             scores: [N] tensor of confidence scores
@@ -1038,45 +1126,23 @@ class ScSegmenterNMSOptim(BaseModel):
 
         Returns:
             Indices of detections kept after suppression.
-
-        Optimized with torch.argsort instead of Python sorted().
         """
         num_instances = boxes.shape[0]
         if num_instances == 0:
             return torch.zeros((0,), dtype=torch.long, device=boxes.device)
 
-        # Vectorized sorting: sort by scores (primary) with areas as tiebreaker
-        # Use stable sort: first sort by area (secondary key), then by score (primary key)
-        # torch.argsort is descending=True for highest first
-        area_order = torch.argsort(areas, descending=True, stable=True)
-        # Reorder scores by area, then sort by score (this gives us score-primary, area-secondary)
-        order = area_order[torch.argsort(scores[area_order], descending=True, stable=True)]
+        # Add tiny area-based epsilon to scores for tiebreaking (preserves original behavior)
+        # Normalize areas to [0, 1e-7] range so it only affects exact ties
+        if areas.numel() > 0 and areas.max() > 0:
+            area_tiebreaker = (areas / areas.max()) * 1e-7
+        else:
+            area_tiebreaker = torch.zeros_like(scores)
+        adjusted_scores = scores + area_tiebreaker
 
-        # Vectorized NMS loop with batch IoU computation
-        keep: List[int] = []
-        suppressed = torch.zeros(num_instances, dtype=torch.bool, device=boxes.device)
+        # Use GPU-accelerated NMS from torchvision
+        keep = nms(boxes, adjusted_scores, self.nms_iou)
 
-        for i in range(num_instances):
-            idx = order[i].item()
-            if suppressed[idx]:
-                continue
-
-            keep.append(idx)
-
-            # Compute IoU with all remaining candidates at once
-            current_box = boxes[idx].unsqueeze(0)  # [1, 4]
-            # Only compute IoU for non-suppressed boxes to avoid redundant work
-            remaining_mask = ~suppressed
-            remaining_mask[idx] = False  # Exclude current
-
-            if remaining_mask.any():
-                remaining_indices = torch.nonzero(remaining_mask, as_tuple=True)[0]
-                ious = box_iou(current_box, boxes[remaining_indices]).squeeze(0)
-                # Mark overlapping boxes as suppressed
-                suppress_these = remaining_indices[ious > self.nms_iou]
-                suppressed[suppress_these] = True
-
-        return torch.tensor(keep, dtype=torch.long, device=boxes.device)
+        return keep
     def _union_merge_clumps(
         self,
         boxes: torch.Tensor,
@@ -1321,7 +1387,7 @@ class ScSegmenterNMSOptim(BaseModel):
         label_area: List[int] = []
         label_detection_idx: List[int] = []
         # Track labels to remove at end (avoid full-image scans during loop)
-        labels_to_remove: List[int] = []
+        labels_to_remove = set()
 
         for detection_idx, (mask_np, (offset_x, offset_y), class_id) in enumerate(
             zip(mask_np_list, offsets, classes_list)
@@ -1348,6 +1414,7 @@ class ScSegmenterNMSOptim(BaseModel):
             roi = labeled_mask[y_start:y_end, x_start:x_end]
             overlap_labels = roi[binary_mask]
             allowed_mask = binary_mask.copy()
+            overwrite_mask = np.zeros_like(binary_mask, dtype=bool)
 
             if overlap_labels.size > 0:
                 incoming_priority = class_priority.get(int(class_id), 0)
@@ -1364,14 +1431,15 @@ class ScSegmenterNMSOptim(BaseModel):
 
                     for label_id in overlapping_labels:
                         label_idx = label_id - 1
-                        # Skip already-removed labels
+                        label_mask = (roi == label_id) & binary_mask
+
+                        # Already-removed labels are still present in the mask until deferred cleanup.
+                        # Allow incoming pixels to overwrite them now so we do not leave holes.
                         if label_area[label_idx] <= 0:
+                            overwrite_mask[label_mask] = True
                             continue
 
                         existing_priority = class_priority.get(label_class[label_idx], 0)
-
-                        # Build label mask only once per label
-                        label_mask = (roi == label_id) & binary_mask
 
                         if incoming_priority <= existing_priority:
                             allowed_mask[label_mask] = False
@@ -1383,14 +1451,15 @@ class ScSegmenterNMSOptim(BaseModel):
 
                         if overlap_fraction >= priority_overlap_frac:
                             # Mark for deferred removal (avoid full-image scan now)
-                            labels_to_remove.append(label_id)
+                            labels_to_remove.add(int(label_id))
                             label_area[label_idx] = 0
+                            overwrite_mask[label_mask] = True
                         else:
                             allowed_mask[label_mask] = False
 
             # Re-fetch ROI in case we need updated view
             roi = labeled_mask[y_start:y_end, x_start:x_end]
-            new_pixels = allowed_mask & (roi == 0)
+            new_pixels = allowed_mask & ((roi == 0) | overwrite_mask)
 
             if new_pixels.any():
                 label_id = len(label_class) + 1
@@ -1428,3 +1497,86 @@ class ScSegmenterNMSOptim(BaseModel):
 
         return labeled_mask, mask_to_detection_map
 
+    def _recalculate_bboxes_from_mask(
+        self,
+        labeled_mask: np.ndarray,
+        n_instances: int,
+        return_areas: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Recalculate bounding boxes from the actual mask pixels in labeled_mask.
+
+        After priority-based stitching, masks may be partially swallowed by higher-priority
+        masks, leaving only a fragment of the original detection. This method computes
+        tight bounding boxes around the surviving mask pixels to ensure bbox-mask consistency.
+
+        Args:
+            labeled_mask: [H, W] array with integer labels (0=background, 1-N=instances)
+            n_instances: Number of instances (labels 1 to n_instances)
+            return_areas: If True, also return mask areas for each instance
+
+        Returns:
+            If return_areas=False: [N, 4] array of bounding boxes in xyxy format
+            If return_areas=True: Tuple of (boxes [N, 4], areas [N])
+        """
+        if n_instances == 0:
+            empty_boxes = np.empty((0, 4), dtype=np.float32)
+            if return_areas:
+                return empty_boxes, np.empty((0,), dtype=np.int64)
+            return empty_boxes
+
+        boxes = np.zeros((n_instances, 4), dtype=np.float32)
+        areas = np.zeros((n_instances,), dtype=np.int64) if return_areas else None
+
+        for label_id in range(1, n_instances + 1):
+            # Find all pixels with this label
+            ys, xs = np.where(labeled_mask == label_id)
+            idx = label_id - 1
+
+            if len(xs) == 0:
+                # Label doesn't exist in mask (shouldn't happen after filtering)
+                # Set to zero-size box at origin
+                boxes[idx] = [0, 0, 0, 0]
+                if return_areas:
+                    areas[idx] = 0
+            else:
+                # Compute tight bounding box (xyxy format)
+                x1 = float(xs.min())
+                y1 = float(ys.min())
+                x2 = float(xs.max() + 1)  # +1 because bbox should include the pixel
+                y2 = float(ys.max() + 1)
+                boxes[idx] = [x1, y1, x2, y2]
+                if return_areas:
+                    areas[idx] = len(xs)
+
+        if return_areas:
+            return boxes, areas
+        return boxes
+
+    def _relabel_mask(
+        self,
+        labeled_mask: np.ndarray,
+        keep_mask: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Relabel a labeled mask to remove filtered labels and make labels consecutive.
+
+        Args:
+            labeled_mask: [H, W] array with integer labels (0=background, 1-N=instances)
+            keep_mask: [N] boolean array indicating which labels to keep
+
+        Returns:
+            Relabeled mask with consecutive labels 1, 2, ..., M where M = sum(keep_mask)
+        """
+        n_labels = len(keep_mask)
+        # Create mapping: old_label -> new_label (0 for removed labels)
+        old_to_new = np.zeros(n_labels + 1, dtype=labeled_mask.dtype)
+        new_label = 1
+        for old_label in range(1, n_labels + 1):
+            if keep_mask[old_label - 1]:
+                old_to_new[old_label] = new_label
+                new_label += 1
+            # else: old_to_new[old_label] remains 0, mapping to background
+
+        # Apply relabeling
+        return old_to_new[labeled_mask]
