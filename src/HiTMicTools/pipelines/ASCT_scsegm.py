@@ -98,13 +98,53 @@ class ASCT_scsegm(BasePipeline):
         img_logger.info("2.1 - Preprocessing image", show_memory=True)
         img_logger.info(f"Preprocessed image shape: {ip.img.shape}")
 
-        # 2.3 Align frames if required
+        # 2.2 Align frames if required
         if align_frames:
-            img_logger.info("2.1 - Aligning frames in the stack", show_memory=True)
+            img_logger.info("2.2 - Aligning frames in the stack", show_memory=True)
             ip.align_image(
                 ref_channel=0, ref_slice=-1, crop_image=True, reference_type="dynamic"
             )
-            img_logger.info("2.1 - Frame alignment completed", show_memory=True)
+            img_logger.info("2.2 - Frame alignment completed", show_memory=True)
+        # Update size x and size y after alignment and maybe crop
+        size_x, size_y = ip.img.shape[-2], ip.img.shape[-1]
+        img_logger.info("2.3 - Detecting and fixing border wells")
+        ip.detect_fix_well(nchannels=0, nslices=0, nframes=range(nFrames))
+        img_logger.info(
+            f"Reference channel intensity before background removal:\n{self.check_px_values(ip, reference_channel, round=3)}"
+        )
+
+        self.clear_background(
+            ip,
+            channel=reference_channel,
+            nFrames=range(nFrames),
+            method=method,
+            pixel_size=pixel_size,
+        )
+        self.clear_background(
+            ip, channel=pi_channel, nFrames=range(nFrames), method=method
+        )
+
+        # 2.4 Focus restoration (conditional)
+        if getattr(self, 'focus_correction', True):  # Default to True for backward compatibility
+            img_logger.info(
+                "2.4 - Restoring focus in the reference channel", show_memory=True
+            )
+            img_logger.info(
+                f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
+            )
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
+                    ip.img[:, 0, reference_channel],
+                    rescale=False,
+                    batch_size=1,
+                    buffer_steps=4,
+                    buffer_dim=-1,
+                    sw_batch_size=1,
+                )
+            img_logger.info("2.4 - Restoring focus in the PI channel", show_memory=True)
+            img_logger.info(
+                f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            )
             with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
                 ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
                     ip.img[:, 0, pi_channel],
@@ -121,7 +161,7 @@ class ASCT_scsegm(BasePipeline):
                 f"PI channel intensity after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
             )
         else:
-            img_logger.info("2.2 - Focus correction disabled, skipping focus restoration", show_memory=True)
+            img_logger.info("2.4 - Focus correction disabled, skipping focus restoration", show_memory=True)
 
         # 2.4 Remove original image (not used after background corr) to save mem
         ip.img_original = np.zeros((1, 1, 1, 1, 1))
@@ -133,12 +173,14 @@ class ASCT_scsegm(BasePipeline):
             frames = ip.img[:, 0, reference_channel, :, :]
             frames = np.clip(frames, 0, 1)  # Ensure [0, 1] range
 
-            # Run 4D instance segmentation with temporal buffering
+            # Run 4D instance segmentation with model-config defaults unless pipeline overrides are set
+            seg_temporal_buffer_size = getattr(self, "sc_segmenter_temporal_buffer_size", None)
+            seg_batch_size = getattr(self, "sc_segmenter_batch_size", None)
             stacked_labeled_masks, all_bboxes, all_class_ids, all_scores = self.sc_segmenter.predict(
                 frames,
                 channel_index=0,
-                temporal_buffer_size=16,
-                batch_size=128,
+                temporal_buffer_size=seg_temporal_buffer_size,
+                batch_size=seg_batch_size,
                 normalize_to_255=False,
                 output_shape="HW",
             )
@@ -407,62 +449,6 @@ class ASCT_scsegm(BasePipeline):
                 ip.clear_image_background(**params)
             else:
                 ip.clear_image_background(**params, unit="um", pixel_size=pixel_size)
-
-    def _log_detection_summary(
-        self,
-        img_logger: MemoryLogger,
-        n_frames: int,
-        total_detections: int,
-        total_instances: int,
-        class_ids: List[np.ndarray],
-        class_scores: List[np.ndarray],
-    ) -> None:
-        """
-        Emit a human-friendly detection summary through the image-analysis logger.
-
-        Args:
-            img_logger: Pipeline logger that records memory usage and metadata.
-            n_frames: Number of frames processed in the current run.
-            total_detections: Total number of bounding boxes returned by the detector.
-            total_instances: Total number of unique segmented instances.
-            class_ids: Per-frame class-id arrays returned by the segmenter.
-            class_scores: Per-frame confidence-score arrays returned by the segmenter.
-        """
-        segmenter_class_dict = self.sc_segmenter.class_dict
-        class_counts = {class_name: 0 for class_name in segmenter_class_dict.values()}
-        class_score_samples = {
-            class_name: [] for class_name in segmenter_class_dict.values()
-        }
-
-        for frame_classes, frame_scores in zip(class_ids, class_scores):
-            for cid, score in zip(frame_classes, frame_scores):
-                class_name = segmenter_class_dict[int(cid)]
-                class_counts[class_name] += 1
-                class_score_samples[class_name].append(float(score))
-
-        avg_detections = total_detections / n_frames if n_frames else 0.0
-        summary_lines = [
-            "[Pipeline] Detection summary:",
-            f"  Total frames processed: {n_frames}",
-            f"  Total bboxes detected: {total_detections}",
-            f"  Total unique instances: {total_instances}",
-            f"  Average detections per frame: {avg_detections:.1f}",
-            "  Objects per class:",
-        ]
-
-        for class_name, count in class_counts.items():
-            scores = class_score_samples.get(class_name, [])
-            if scores:
-                q05, q25, q50, q75, q95 = np.percentile(scores, [5, 25, 50, 75, 95])
-                stats = (
-                    f"conf_scores: q05={q05:.3f}, q25={q25:.3f}, "
-                    f"q50={q50:.3f}, q75={q75:.3f}, q95={q95:.3f}"
-                )
-            else:
-                stats = "conf_scores: q05=NA, q25=NA, q50=NA, q75=NA, q95=NA"
-            summary_lines.append(f"    - {class_name}: {count}, {stats}")
-
-        img_logger.info("\n".join(summary_lines))
 
     def generate_data_summary(
         self,

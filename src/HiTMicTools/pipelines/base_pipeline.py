@@ -16,6 +16,7 @@ from contextlib import contextmanager
 # Type annotations and
 from typing import List, Dict, Optional, Any
 from abc import ABC, abstractmethod
+import numpy as np
 
 # Local imports
 from HiTMicTools import __version__
@@ -221,14 +222,15 @@ class BasePipeline(ABC):
             self.oof_class_map = config_dic.get("inferer_args", {}).get("class_dict")
             self.main_logger.info("Loaded model: oof_detector (RF-DETR)")
         elif model_type == "sc-segmenter":
+            detector_backend = model_configs.get("model_type", "rfdetrsegpreview")
             self.sc_segmenter = ScSegmenter(
                 model_path,
-                model_type=model_configs.get("model_type", "rfdetrsegpreview"),
+                model_type=detector_backend,
                 compile_mode=compile_mode,
                 **config_dic.get("inferer_args", {}),
             )
             self.class_dict = config_dic.get("inferer_args", {}).get("class_dict")
-            self.main_logger.info("Loaded model: sc_segmenter (RF-DETR Segmenter)")
+            self.main_logger.info(f"Loaded model: sc_segmenter (backend={detector_backend})")
         else:
             raise ValueError(f"Invalid model type: {model_type}")
 
@@ -748,6 +750,52 @@ class BasePipeline(ABC):
                 f"Total processing time for all files: {total_elapsed_time:.2f} seconds"
             )
             gc.collect()
+
+    def _log_detection_summary(
+        self,
+        img_logger: MemoryLogger,
+        n_frames: int,
+        total_detections: int,
+        total_instances: int,
+        class_ids: List[np.ndarray],
+        class_scores: List[np.ndarray],
+    ) -> None:
+        """Emit a human-friendly detection summary through the image-analysis logger."""
+        segmenter_class_dict = self.sc_segmenter.class_dict
+        class_counts = {class_name: 0 for class_name in segmenter_class_dict.values()}
+        class_score_samples = {
+            class_name: [] for class_name in segmenter_class_dict.values()
+        }
+
+        for frame_classes, frame_scores in zip(class_ids, class_scores):
+            for cid, score in zip(frame_classes, frame_scores):
+                class_name = segmenter_class_dict[int(cid)]
+                class_counts[class_name] += 1
+                class_score_samples[class_name].append(float(score))
+
+        avg_detections = total_detections / n_frames if n_frames else 0.0
+        summary_lines = [
+            "[Pipeline] Detection summary:",
+            f"  Total frames processed: {n_frames}",
+            f"  Total bboxes detected: {total_detections}",
+            f"  Total unique instances: {total_instances}",
+            f"  Average detections per frame: {avg_detections:.1f}",
+            "  Objects per class:",
+        ]
+
+        for class_name, count in class_counts.items():
+            scores = class_score_samples.get(class_name, [])
+            if scores:
+                q05, q25, q50, q75, q95 = np.percentile(scores, [5, 25, 50, 75, 95])
+                stats = (
+                    f"conf_scores: q05={q05:.3f}, q25={q25:.3f}, "
+                    f"q50={q50:.3f}, q75={q75:.3f}, q95={q95:.3f}"
+                )
+            else:
+                stats = "conf_scores: q05=NA, q25=NA, q50=NA, q75=NA, q95=NA"
+            summary_lines.append(f"    - {class_name}: {count}, {stats}")
+
+        img_logger.info("\n".join(summary_lines))
 
     @abstractmethod
     def analyse_image(

@@ -67,7 +67,7 @@ class ASCT_zaslavier(BasePipeline):
     """
 
     # Models required by this pipeline
-    required_models = {"bf_focus", "fl_focus", "segmentation", "cell_classifier", "pi_classification"}
+    required_models = {"bf_focus", "fl_focus", "segmentation", "cell_classifier", "pi_classification", "sc_segmenter"}
 
     def analyse_image(
         self,
@@ -143,98 +143,160 @@ class ASCT_zaslavier(BasePipeline):
             ip, channel=gfp_channel, nFrames=range(nFrames), method=method
         )
 
-        # 2.2 Focus restoration in the reference channel
-        img_logger.info(
-            "2.2 - Restoring focus in the reference channel", show_memory=True
-        )
-        img_logger.info(
-            f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
-        )
-        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
-            ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
-                ip.img[:, 0, reference_channel],
-                rescale=False,
-                batch_size=1,
-                buffer_steps=4,
-                buffer_dim=-1,
-                sw_batch_size=1,
+        # 2.2 Focus restoration (conditional)
+        if getattr(self, 'focus_correction', True):  # Default to True for backward compatibility
+            img_logger.info(
+                "2.2 - Restoring focus in the reference channel", show_memory=True
             )
-        img_logger.info("2.2 - Restoring focus in the PI channel", show_memory=True)
-        img_logger.info(
-            f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
-        )
-        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
-            ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
-                ip.img[:, 0, pi_channel],
-                batch_size=1,
-                buffer_steps=4,
-                buffer_dim=-1,
-                sw_batch_size=1,
-                padding_mode="reflect",
+            img_logger.info(
+                f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
             )
-        
-        if gfp_channel is not None:
-            img_logger.info("2.2 - Restoring focus in the GFP channel", show_memory=True)
             with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
-                ip.img[:, 0, gfp_channel] = self.fl_focus_restorer.predict(
-                    ip.img[:, 0, gfp_channel],
+                ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
+                    ip.img[:, 0, reference_channel],
+                    rescale=False,
+                    batch_size=1,
+                    buffer_steps=4,
+                    buffer_dim=-1,
+                    sw_batch_size=1,
+                )
+            img_logger.info("2.2 - Restoring focus in the PI channel", show_memory=True)
+            img_logger.info(
+                f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            )
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
+                    ip.img[:, 0, pi_channel],
                     batch_size=1,
                     buffer_steps=4,
                     buffer_dim=-1,
                     sw_batch_size=1,
                     padding_mode="reflect",
                 )
-        img_logger.info(
-            f"Reference channel intensity after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
-        )
-        img_logger.info(
-            f"PI channel intensity after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
-        )
+
+            if gfp_channel is not None:
+                img_logger.info("2.2 - Restoring focus in the GFP channel", show_memory=True)
+                with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                    ip.img[:, 0, gfp_channel] = self.fl_focus_restorer.predict(
+                        ip.img[:, 0, gfp_channel],
+                        batch_size=1,
+                        buffer_steps=4,
+                        buffer_dim=-1,
+                        sw_batch_size=1,
+                        padding_mode="reflect",
+                    )
+            img_logger.info(
+                f"Reference channel intensity after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
+            )
+            img_logger.info(
+                f"PI channel intensity after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            )
+        else:
+            img_logger.info("2.2 - Focus correction disabled, skipping focus restoration", show_memory=True)
 
         # 2.4 Remove original image (not used after background corr) to save mem
         ip.img_original = np.zeros((1, 1, 1, 1, 1))
 
-        # 3.1 Segment Image --------------------------------------------
-        img_logger.info("3.1 - Image segmentation", show_memory=True, cuda=is_cuda)
-        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
-            prob_map = self.image_segmentator.predict(
-                ip.img[:, 0, reference_channel, :, :],
-                buffer_steps=4,
-                buffer_dim=-1,
-                sw_batch_size=1,
+        # 3. Segmentation + Classification ------------------------------------
+        use_sc_segmenter = getattr(self, "sc_segmenter", None) is not None
+
+        if use_sc_segmenter:
+            # --- ScSegmenter path (BacDETR / RF-DETR) ---
+            img_logger.info("3 - Running single-step instance segmentation and classification", show_memory=True, cuda=is_cuda)
+
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                frames = ip.img[:, 0, reference_channel, :, :]
+                frames = np.clip(frames, 0, 1)  # Ensure [0, 1] range
+
+                seg_temporal_buffer_size = getattr(self, "sc_segmenter_temporal_buffer_size", None)
+                seg_batch_size = getattr(self, "sc_segmenter_batch_size", None)
+                stacked_labeled_masks, all_bboxes, all_class_ids, all_scores = self.sc_segmenter.predict(
+                    frames,
+                    channel_index=0,
+                    temporal_buffer_size=seg_temporal_buffer_size,
+                    batch_size=seg_batch_size,
+                    normalize_to_255=False,
+                    output_shape="HW",
+                )
+
+            img_logger.info("3 - Instance segmentation completed", show_memory=True, cuda=is_cuda)
+
+            total_detections = sum(len(bboxes) for bboxes in all_bboxes)
+            total_instances = np.sum([len(np.unique(stacked_labeled_masks[i])) - 1 for i in range(nFrames)])
+
+            self._log_detection_summary(
+                img_logger=img_logger,
+                n_frames=nFrames,
+                total_detections=total_detections,
+                total_instances=total_instances,
+                class_ids=all_class_ids,
+                class_scores=all_scores,
             )
-        img_logger.info("3.1 - Segmentation completed", show_memory=True, cuda=is_cuda)
 
-        # Get ROIs
-        if prob_map.ndim > 3 and prob_map.shape[1] > 1:
-            prob_map = np.max(prob_map, axis=1, keepdims=True)
-        elif prob_map.ndim == 3:
-            prob_map = np.expand_dims(prob_map, axis=1)
-        elif prob_map.ndim == 2:
-            prob_map = np.expand_dims(prob_map, axis=(0, 1))
+            # Create RoiAnalyser from labeled masks
+            img_logger.info("3.2 - Creating ROI analyser from labeled masks", show_memory=True)
+            img_analyser = RoiAnalyser.from_labeled_mask(
+                ip.img,
+                stacked_labeled_masks,
+                stack_order=("TSCXY", "TXY")
+            )
+
+            # Remove image-processor to release space
+            del ip
+
+            # Flatten class IDs and scores across frames for mapping to measurements
+            object_classes = []
+            for frame_idx, frame_classes in enumerate(all_class_ids):
+                if self.class_dict:
+                    frame_class_names = [self.class_dict[int(cid)] for cid in frame_classes]
+                else:
+                    frame_class_names = [f"class_{int(cid)}" for cid in frame_classes]
+                object_classes.extend(frame_class_names)
+
+            img_logger.info(f"3.2 - {img_analyser.total_rois} objects found in segmentation")
+
         else:
-            pass
+            # --- Legacy Segmentator + CellClassifier path ---
+            img_logger.info("3.1 - Image segmentation", show_memory=True, cuda=is_cuda)
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                prob_map = self.image_segmentator.predict(
+                    ip.img[:, 0, reference_channel, :, :],
+                    buffer_steps=4,
+                    buffer_dim=-1,
+                    sw_batch_size=1,
+                )
+            img_logger.info("3.1 - Segmentation completed", show_memory=True, cuda=is_cuda)
 
-        # 3.2 Get ROIs
-        img_logger.info("3.2 - Extracting ROIs", show_memory=True)
-        img_analyser = RoiAnalyser(ip.img, prob_map, stack_order=("TSCXY", "TCXY"))
+            # Get ROIs
+            if prob_map.ndim > 3 and prob_map.shape[1] > 1:
+                prob_map = np.max(prob_map, axis=1, keepdims=True)
+            elif prob_map.ndim == 3:
+                prob_map = np.expand_dims(prob_map, axis=1)
+            elif prob_map.ndim == 2:
+                prob_map = np.expand_dims(prob_map, axis=(0, 1))
+            else:
+                pass
 
-        # Remove image-processor to release space
-        del ip
-        img_analyser.create_binary_mask()
-        img_analyser.clean_binmask(min_pixel_size=20)
-        img_analyser.get_labels()
-        img_logger.info(f"{img_analyser.total_rois} objects found in segmentation")
+            # 3.2 Get ROIs
+            img_logger.info("3.2 - Extracting ROIs", show_memory=True)
+            img_analyser = RoiAnalyser(ip.img, prob_map, stack_order=("TSCXY", "TCXY"))
 
-        # 3.3 Classify ROIs
-        img_logger.info("3.2 - Classifying ROIs", show_memory=True, cuda=is_cuda)
-        with ReserveResource(device, 12.0, logger=img_logger, timeout=240):
-            object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=4)
-        img_logger.info(
-            "3.2 - GPU memory status after classification",
-            show_memory=True,
-            cuda=is_cuda,
-        )
+            # Remove image-processor to release space
+            del ip
+            img_analyser.create_binary_mask()
+            img_analyser.clean_binmask(min_pixel_size=20)
+            img_analyser.get_labels()
+            img_logger.info(f"{img_analyser.total_rois} objects found in segmentation")
+
+            # 3.3 Classify ROIs
+            img_logger.info("3.3 - Classifying ROIs", show_memory=True, cuda=is_cuda)
+            with ReserveResource(device, 12.0, logger=img_logger, timeout=240):
+                object_classes, labels = self.batch_classify_rois(img_analyser, batch_size=4)
+            img_logger.info(
+                "3.3 - GPU memory status after classification",
+                show_memory=True,
+                cuda=is_cuda,
+            )
 
         # 4.1 Calc. measurements --------------------------------------------
         img_logger.info("4 - Starting measurements", show_memory=True)
@@ -361,27 +423,35 @@ class ASCT_zaslavier(BasePipeline):
         d_summary.to_csv(export_path + "_summary.csv")
 
         if export_labeled_mask:
-            # Create mapping for object classes
-            class_to_id = {
-                "single-cell": 0,
-                "clump": 1,
-                "noise": 2,
-                "off-focus": 3,
-                "joint-cell": 4,
-            }
             label_slice = img_analyser.get(
                 "labels", index=(slice(None), 0, 0), to_numpy=True
             )
+
+            # Build class value map depending on segmentation backend
+            if use_sc_segmenter and self.class_dict:
+                class_value_map = {
+                    name: class_idx + 1
+                    for class_idx, name in sorted(self.class_dict.items())
+                }
+            else:
+                # Legacy classifier path
+                class_value_map = {
+                    "single-cell": 1,
+                    "clump": 2,
+                    "noise": 3,
+                    "off-focus": 4,
+                    "joint-cell": 5,
+                }
+
+            # Use fl_measurements labels (works for both paths)
+            label_ids = fl_measurements["label"].tolist()
 
             # Map object classes to the labeled mask
             object_class_mask = map_predictions_to_labels(
                 label_slice,
                 object_classes,
-                labels,
-                value_map={
-                    class_name: class_id + 1
-                    for class_name, class_id in class_to_id.items()
-                },
+                label_ids,
+                value_map=class_value_map,
             )
 
             # If PI classifier was used, create a second channel for PI classification
@@ -423,7 +493,7 @@ class ASCT_zaslavier(BasePipeline):
             tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
 
         img_logger.info(f"Analysis completed for {movie_name}", show_memory=True)
-        del prob_map, img, fl_measurements, d_summary, img_analyser
+        del img, fl_measurements, d_summary, img_analyser
         gc.collect()
         empty_gpu_cache(device)
         img_logger.info("Garbage collection completed", show_memory=True)

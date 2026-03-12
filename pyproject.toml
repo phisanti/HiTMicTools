@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hitmictools"
-version = "0.5.04"
+version = "0.5.1"
 description = "Tools for high-throughput microscopy image analysis"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -64,6 +64,9 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [project.optional-dependencies]
+bacdetr = [
+    "bacdetr @ git+https://github.com/phisanti/BacDETRSegm.git@develop#subdirectory=bacdetr",
+]
 cuda = [
     "cupy-cuda11x; platform_system != 'Darwin'",
     "cudf; platform_system != 'Darwin'",
