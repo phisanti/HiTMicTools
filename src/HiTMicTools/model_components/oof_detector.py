@@ -7,7 +7,10 @@ import torch
 import torch.nn.functional as F
 from torchvision.ops import batched_nms
 
-from rfdetr import RFDETRBase
+try:
+    from rfdetr import RFDETRBase
+except ImportError:
+    RFDETRBase = None
 
 from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.resource_management.sysutils import get_device
@@ -103,6 +106,14 @@ class OofDetector(BaseModel):
             class_bias = checkpoint["model"]["class_embed.bias"]
             num_classes = class_bias.shape[0] - 1
 
+        if RFDETRBase is None:
+            raise ImportError(
+                "rfdetr is required but not installed.\n"
+                "Install it with:\n"
+                "  pip install 'hitmictools[rfdetr]'\n"
+                "or directly:\n"
+                "  pip install rfdetr  # from https://github.com/roboflow/rf-detr"
+            )
         self.model = RFDETRBase(
             pretrain_weights=model_path,
             num_classes=num_classes,

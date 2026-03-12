@@ -17,7 +17,10 @@ try:
 except ImportError:
     sv = None
 
-from rfdetr import RFDETRSegPreview
+try:
+    from rfdetr import RFDETRSegPreview
+except ImportError:
+    RFDETRSegPreview = None
 
 from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.resource_management.sysutils import get_device
@@ -185,6 +188,14 @@ class ScSegmenterNMSOptim(BaseModel):
             class_bias = checkpoint["model"]["class_embed.bias"]
             num_classes = class_bias.shape[0] - 1
 
+        if RFDETRSegPreview is None:
+            raise ImportError(
+                "rfdetr is required but not installed.\n"
+                "Install it with:\n"
+                "  pip install 'hitmictools[rfdetr]'\n"
+                "or directly:\n"
+                "  pip install rfdetr  # from https://github.com/roboflow/rf-detr"
+            )
         self.model = RFDETRSegPreview(
             pretrain_weights=model_path,
             num_classes=num_classes,

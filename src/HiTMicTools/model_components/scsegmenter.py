@@ -11,22 +11,26 @@ import torch
 import torch.nn.functional as F
 from torchvision.ops import nms
 
-from bacdetr import BacDETRSeg as _BacDETRSeg
+try:
+    from bacdetr import BacDETRSeg as _BacDETRSeg
 
+    class BacDETRSeg(_BacDETRSeg):
+        """Concrete subclass that stubs out abstract training methods.
 
-class BacDETRSeg(_BacDETRSeg):
-    """Concrete subclass that stubs out abstract training methods.
+        BacDETR declares train() and train_from_config() as abstract, but
+        HiTMicTools only needs inference.  This thin wrapper satisfies the
+        ABC contract so the class can be instantiated for prediction only.
+        """
 
-    BacDETR declares train() and train_from_config() as abstract, but
-    HiTMicTools only needs inference.  This thin wrapper satisfies the
-    ABC contract so the class can be instantiated for prediction only.
-    """
+        def train(self, **kwargs):
+            raise NotImplementedError("Training is not supported via HiTMicTools")
 
-    def train(self, **kwargs):
-        raise NotImplementedError("Training is not supported via HiTMicTools")
+        def train_from_config(self, *args, **kwargs):
+            raise NotImplementedError("Training is not supported via HiTMicTools")
 
-    def train_from_config(self, *args, **kwargs):
-        raise NotImplementedError("Training is not supported via HiTMicTools")
+except ImportError:
+    _BacDETRSeg = None
+    BacDETRSeg = None
 
 from HiTMicTools.model_components.base_model import BaseModel
 from HiTMicTools.resource_management.sysutils import get_device
@@ -166,6 +170,18 @@ class ScSegmenter(BaseModel):
 
         # BacDETRSeg handles both BacDETR (with adapter) and vanilla RF-DETR
         # checkpoints (without adapter) through the same API.
+        if BacDETRSeg is None:
+            raise ImportError(
+                "BacDETR is required for single-cell segmentation but is not installed.\n"
+                "Install it with:\n"
+                "  pip install 'hitmictools[bacdetr]'\n"
+                "or directly:\n"
+                "  pip install 'bacdetr @ git+https://github.com/phisanti/BacDETRSegm.git@develop#subdirectory=bacdetr'\n\n"
+                "If using an RF-DETR checkpoint, you also need:\n"
+                "  pip install 'hitmictools[rfdetr]'\n"
+                "or directly:\n"
+                "  pip install rfdetr  # from https://github.com/roboflow/rf-detr"
+            )
         self.model = BacDETRSeg(
             pretrain_weights=model_path,
             num_classes=num_classes,

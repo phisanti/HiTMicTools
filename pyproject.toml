@@ -39,7 +39,6 @@ dependencies = [
     "ome-types",
     "pyyaml",
     "joblib",
-    "rfdetr",
     "hyperactive==4.8.0",
     "jax==0.4.23",
     "jaxlib==0.4.23",
@@ -66,6 +65,9 @@ where = ["src"]
 [project.optional-dependencies]
 bacdetr = [
     "bacdetr @ git+https://github.com/phisanti/BacDETRSegm.git@develop#subdirectory=bacdetr",
+]
+rfdetr = [
+    "rfdetr",
 ]
 cuda = [
     "cupy-cuda11x; platform_system != 'Darwin'",
