@@ -26,7 +26,10 @@ from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
 from HiTMicTools.model_components.oof_detector import OofDetector
 from HiTMicTools.model_components.scsegmenter import ScSegmenter
-from HiTMicTools.tracking.cell_tracker import CellTracker
+try:
+    from HiTMicTools.tracking.cell_tracker import CellTracker
+except ImportError:
+    CellTracker = None
 from HiTMicTools.resource_management.sysutils import get_device, get_system_info
 from HiTMicTools.model_arch.nafnet import NAFNet
 from HiTMicTools.model_arch.flexresnet import FlexResNet
