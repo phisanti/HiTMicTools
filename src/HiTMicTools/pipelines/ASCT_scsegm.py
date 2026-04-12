@@ -73,6 +73,7 @@ class ASCT_scsegm(BasePipeline):
         reference_channel = self.reference_channel
         pi_channel = self.pi_channel
         align_frames = self.align_frames
+        method = self.method
 
         img_logger.info("1 - Reading image", show_memory=True)
         image_reader = ImageReader(file_i, self.file_type)
@@ -212,19 +213,32 @@ class ASCT_scsegm(BasePipeline):
         # Remove image-processor to release space
         del ip
 
-        # Flatten class IDs and scores across frames for mapping to measurements
-        object_classes = []
-        object_scores = []
-        for frame_idx, frame_classes in enumerate(all_class_ids):
-            # Map class indices to class names using class_dict
-            if self.class_dict:
-                frame_class_names = [self.class_dict[int(cid)] for cid in frame_classes]
-            else:
-                frame_class_names = [f"class_{int(cid)}" for cid in frame_classes]
-            object_classes.extend(frame_class_names)
-            object_scores.extend(all_scores[frame_idx])  # Get corresponding scores for this frame
+        # Build a reference table that maps (frame, label) → class name + score.
+        # ScSegmenter guarantees consecutive labels 1..N per frame after NMS/relabeling,
+        # so label_index+1 corresponds to the mask label.  We merge on (frame, label)
+        # rather than assuming positional alignment with the regionprops DataFrame —
+        # this is robust even if regionprops drops a label with zero pixels.
+        detection_records = []
+        for frame_idx, (frame_classes, frame_scores) in enumerate(
+            zip(all_class_ids, all_scores)
+        ):
+            for label_idx, (cid, score) in enumerate(zip(frame_classes, frame_scores)):
+                if self.class_dict:
+                    class_name = self.class_dict[int(cid)]
+                else:
+                    class_name = f"class_{int(cid)}"
+                detection_records.append(
+                    (frame_idx, label_idx + 1, class_name, float(score))
+                )
+        detection_df = pd.DataFrame(
+            detection_records,
+            columns=["frame", "label", "object_class", "detection_score"],
+        )
 
-        img_logger.info(f"3.2 - {img_analyser.total_rois} objects found in segmentation")
+        img_logger.info(
+            f"3.2 - {img_analyser.total_rois} max label per frame | "
+            f"{len(detection_records)} detection records from segmenter"
+        )
 
         # 4.1 Calc. measurements --------------------------------------------
         img_logger.info("4 - Starting measurements", show_memory=True)
@@ -254,7 +268,23 @@ class ASCT_scsegm(BasePipeline):
             extra_properties=(roi_skewness, roi_std_dev),
         )
 
-        fl_measurements["object_class"] = object_classes
+        # Merge class names and detection scores into measurements via (frame, label).
+        n_before = len(fl_measurements)
+        fl_measurements = fl_measurements.merge(
+            detection_df, on=["frame", "label"], how="left"
+        )
+        fl_measurements["object_class"] = fl_measurements["object_class"].fillna("unknown")
+        fl_measurements["detection_score"] = fl_measurements["detection_score"].fillna(0.0)
+        n_unknown = (fl_measurements["object_class"] == "unknown").sum()
+        if n_unknown > 0:
+            img_logger.warning(
+                f"class merge: {n_unknown}/{n_before} ROIs could not be matched "
+                f"to a detection — marked as 'unknown'"
+            )
+        else:
+            img_logger.info(
+                f"class merge: all {n_before} ROIs matched successfully"
+            )
 
         img_logger.info("4.3 - Extracting time metadata")
         time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
@@ -322,13 +352,14 @@ class ASCT_scsegm(BasePipeline):
             # Create two channels: instance labels and class labels
 
             # Map object classes to the labeled mask
+            object_classes_col = fl_measurements["object_class"].tolist()
             if self.class_dict:
                 class_value_map = {
                     name: class_idx + 1
                     for class_idx, name in sorted(self.class_dict.items())
                 }
             else:
-                unique_class_names = sorted(set(object_classes))
+                unique_class_names = sorted(set(object_classes_col))
                 class_value_map = {
                     class_name: idx + 1
                     for idx, class_name in enumerate(unique_class_names)
@@ -339,7 +370,7 @@ class ASCT_scsegm(BasePipeline):
             )
             object_class_mask = map_predictions_to_labels(
                 labeled_mask_slice,
-                object_classes,
+                object_classes_col,
                 fl_measurements["label"].tolist(),
                 value_map=class_value_map,
             )
