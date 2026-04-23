@@ -65,30 +65,49 @@ def build_and_run_pipeline(config_file: str, worklist: str = None):
 
     # Load tracker if tracking is enabled and config is provided
     if configs.pipeline_setup.get("tracking", False):
-        if not check_btrack():
-            print(
-                "\033[1mError: btrack package is missing or not properly compiled. Please check the installation README at "
-                "https://github.com/phisanti/HiTMicTools for proper btrack compilation instructions.\033[0m"
-            )
-            sys.exit(1)
-
         tracking_config = configs.get("tracking", {})
-        tracker_override_args = tracking_config.get("parameters_override", None)
+        tracker_backend = tracking_config.get("backend", "btrack")
 
-        config_path = tracking_config.get("config_path")
+        if tracker_backend == "hungarian":
+            hungarian_params = tracking_config.get("parameters", {})
+            analysis_wf.load_tracker(
+                tracker_backend="hungarian",
+                tracker_config=hungarian_params,
+            )
+            print(
+                f"Tracking enabled: Hungarian "
+                f"(max_distance={hungarian_params.get('max_distance', 25.0)})"
+            )
 
-        if model_bundle:
-            analysis_wf.load_tracker(
-                model_bundle, tracker_override_args=tracker_override_args
-            )
-            print(f"Tracking enabled with config from bundle: {model_bundle}")
-        elif config_path:
-            analysis_wf.load_tracker(
-                config_path, tracker_override_args=tracker_override_args
-            )
-            print(f"Tracking enabled with config: {config_path}")
+        elif tracker_backend == "btrack":
+            if not check_btrack():
+                print(
+                    "\033[1mError: btrack package is missing or not properly compiled. "
+                    "Please check the installation README at "
+                    "https://github.com/phisanti/HiTMicTools for proper btrack "
+                    "compilation instructions.\033[0m"
+                )
+                sys.exit(1)
+
+            tracker_override_args = tracking_config.get("parameters_override", None)
+            config_path = tracking_config.get("config_path")
+
+            if model_bundle:
+                analysis_wf.load_tracker(
+                    model_bundle, tracker_override_args=tracker_override_args
+                )
+                print(f"Tracking enabled with config from bundle: {model_bundle}")
+            elif config_path:
+                analysis_wf.load_tracker(
+                    config_path, tracker_override_args=tracker_override_args
+                )
+                print(f"Tracking enabled with config: {config_path}")
+            else:
+                print("Warning: Tracking enabled but no config source provided")
+                sys.exit(1)
+
         else:
-            print("Warning: Tracking enabled but no config source provided")
+            print(f"Error: Unknown tracker backend: {tracker_backend}")
             sys.exit(1)
     else:
         print("Tracking disabled")

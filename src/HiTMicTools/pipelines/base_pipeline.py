@@ -26,10 +26,8 @@ from HiTMicTools.model_components.cell_classifier import CellClassifier
 from HiTMicTools.model_components.focus_restorer import FocusRestorer
 from HiTMicTools.model_components.oof_detector import OofDetector
 from HiTMicTools.model_components.scsegmenter import ScSegmenter
-try:
-    from HiTMicTools.tracking.cell_tracker import CellTracker
-except ImportError:
-    CellTracker = None
+# CellTracker imported lazily in load_tracker() to avoid btrack dependency
+# when using HungarianTracker backend
 from HiTMicTools.resource_management.sysutils import get_device, get_system_info
 from HiTMicTools.model_arch.nafnet import NAFNet
 from HiTMicTools.model_arch.flexresnet import FlexResNet
@@ -366,38 +364,56 @@ class BasePipeline(ABC):
             )
 
     def load_tracker(
-        self, config_path: str, tracker_override_args: Optional[Dict[str, Any]] = None
+        self,
+        config_path: str = None,
+        tracker_override_args: Optional[Dict[str, Any]] = None,
+        tracker_backend: str = "btrack",
+        tracker_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
-        Load and configure cell tracker from config file or zip bundle.
+        Load and configure cell tracker.
 
         Args:
-            config_path: Path to config file (.yml/.json) or zip bundle
-            tracker_override_args: Optional dict to override tracker parameters
+            config_path: Path to config file (.yml/.json) or zip bundle (btrack only)
+            tracker_override_args: Optional dict to override tracker parameters (btrack only)
+            tracker_backend: Tracker backend - "btrack" or "hungarian"
+            tracker_config: Backend-specific parameters (hungarian only)
         """
+        if tracker_backend == "hungarian":
+            from HiTMicTools.tracking.hungarian_tracker import HungarianTracker
 
-        # Validate file exists
-        if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Tracker config not found: {config_path}")
-
-        # Load configuration based on file type
-        if config_path.endswith(".zip"):
-            config = self._load_tracker_config_from_zip(config_path)
-            # Apply override arguments if provided
-            if tracker_override_args:
-                config = update_config(
-                    config, tracker_override_args, logger=self.main_logger
-                )
-
-            self.cell_tracker = CellTracker(config_dict=config)
-        else:
-            # For standalone files, pass config_path
-            override_args = tracker_override_args or {}
-            self.cell_tracker = CellTracker(
-                config_dict=config_path, override_args=override_args
+            params = tracker_config or {}
+            self.cell_tracker = HungarianTracker(**params)
+            self.main_logger.info(
+                f"Hungarian tracker loaded (max_distance={params.get('max_distance', 25.0)})"
             )
 
-        self.main_logger.info(f"Cell tracker loaded from: {config_path}")
+        elif tracker_backend == "btrack":
+            from HiTMicTools.tracking.cell_tracker import CellTracker
+
+            if config_path is None:
+                raise ValueError("config_path is required for btrack backend")
+
+            if not os.path.exists(config_path):
+                raise FileNotFoundError(f"Tracker config not found: {config_path}")
+
+            if config_path.endswith(".zip"):
+                config = self._load_tracker_config_from_zip(config_path)
+                if tracker_override_args:
+                    config = update_config(
+                        config, tracker_override_args, logger=self.main_logger
+                    )
+                self.cell_tracker = CellTracker(config_dict=config)
+            else:
+                override_args = tracker_override_args or {}
+                self.cell_tracker = CellTracker(
+                    config_dict=config_path, override_args=override_args
+                )
+
+            self.main_logger.info(f"Cell tracker loaded from: {config_path}")
+
+        else:
+            raise ValueError(f"Unknown tracker_backend: {tracker_backend}")
 
     def _load_tracker_config_from_zip(self, zip_path: str) -> Dict[str, Any]:
         """Load tracker config from zip file."""
