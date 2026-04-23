@@ -321,6 +321,18 @@ class ASCT_scsegm(BasePipeline):
                 fl_measurements[self.pi_classifier.feature_names_in_]
             )
             fl_measurements["pi_class"] = predictions
+
+            # 4.6 piPOS lock-in (if tracker supports it)
+            if (
+                self.tracking
+                and self.cell_tracker is not None
+                and hasattr(self.cell_tracker, "apply_pipos_lockin")
+            ):
+                img_logger.info("4.6 - Applying piPOS lock-in")
+                fl_measurements = self.cell_tracker.apply_pipos_lockin(
+                    fl_measurements, logger=img_logger
+                )
+
             fl_measurements["file"] = name
 
             # Generate summary data using the dedicated method
