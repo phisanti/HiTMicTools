@@ -81,7 +81,7 @@ class ScSegmenterNMSOptim(BaseModel):
     PRIORITY_CLASS_NAMES = {1: "clump", 2: "debris", 0: "single-cell"}
     PRIORITY_CLASS_ORDER = {1: 3, 2: 2, 0: 1}
     # For our problem case it makes sense that clumps swallow everything.
-    MIN_MASK_AREA = 5  # Minimum mask area in pixels to keep a detection
+    DEFAULT_MIN_MASK_AREA = 5  # Minimum mask area in pixels to keep a detection
 
     # Valid compile modes for torch.compile
     VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune", False}
@@ -97,6 +97,7 @@ class ScSegmenterNMSOptim(BaseModel):
         temporal_buffer_size: int = 8,
         batch_size: int = 32,
         mask_threshold: float = 0.5,
+        min_mask_area: int = DEFAULT_MIN_MASK_AREA,
         class_dict: Optional[dict] = None,
         model_type: str = "rfdetrsegpreview",
         compile_mode: str = False,
@@ -116,6 +117,7 @@ class ScSegmenterNMSOptim(BaseModel):
             temporal_buffer_size: Number of frames to process in GPU memory at once.
             batch_size: Number of spatial tiles to process in parallel per batch.
             mask_threshold: Binary threshold for converting predicted masks to instance labels.
+            min_mask_area: Minimum surviving mask area in pixels to keep a detection.
             class_dict: Dictionary mapping class indices to names (e.g., {0: 'single-cell', 1: 'clump'}).
                 If provided, num_classes is derived from its length. If None, inferred from checkpoint.
             model_type: Identifier for the detector backbone to instantiate.
@@ -130,6 +132,7 @@ class ScSegmenterNMSOptim(BaseModel):
         assert temporal_buffer_size > 0, "temporal_buffer_size must be positive."
         assert batch_size > 0, "batch_size must be positive."
         assert 0 < mask_threshold < 1, "mask_threshold must be in (0, 1)."
+        assert min_mask_area >= 0, "min_mask_area must be non-negative."
 
         # Validate compile_mode
         if compile_mode not in self.VALID_COMPILE_MODES:
@@ -155,6 +158,7 @@ class ScSegmenterNMSOptim(BaseModel):
         self.temporal_buffer_size = temporal_buffer_size
         self.batch_size = batch_size
         self.mask_threshold = mask_threshold
+        self.min_mask_area = min_mask_area
         self.class_dict = class_dict
 
         # Track raw detection counts for statistics
@@ -1101,9 +1105,9 @@ class ScSegmenterNMSOptim(BaseModel):
                     labeled_mask, len(mask_to_detection_map), return_areas=True
                 )
 
-                # Filter out tiny masks (< MIN_MASK_AREA pixels)
+                # Filter out tiny masks (< min_mask_area pixels)
                 # These are fragments from partial swallowing that can't form valid polygons
-                keep_mask = mask_areas >= self.MIN_MASK_AREA
+                keep_mask = mask_areas >= self.min_mask_area
                 if not keep_mask.all():
                     keep_indices = np.where(keep_mask)[0]
                     boxes_np = boxes_np[keep_indices]
