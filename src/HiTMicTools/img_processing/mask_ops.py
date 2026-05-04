@@ -1,4 +1,4 @@
-from typing import List, Union, Optional, Dict
+from typing import Any, List, Union, Optional, Dict
 import numpy as np
 
 
@@ -81,3 +81,32 @@ def map_predictions_to_labels(
     prediction_image = vectorized_map(labeled_image)
 
     return prediction_image
+
+
+def map_predictions_to_labels_by_frame(
+    labeled_stack: np.ndarray,
+    measurements: Any,
+    prediction_col: str,
+    label_col: str = "label",
+    frame_col: str = "frame",
+    value_map: Optional[Dict[str, int]] = None,
+    background_value: int = 0,
+) -> np.ndarray:
+    """Map per-object predictions onto a time stack with per-frame label IDs."""
+    if labeled_stack.ndim != 3:
+        raise ValueError("labeled_stack must have shape (T, Y, X)")
+
+    mapped_frames = []
+    for frame_idx in range(labeled_stack.shape[0]):
+        frame_measurements = measurements[measurements[frame_col] == frame_idx]
+        mapped_frames.append(
+            map_predictions_to_labels(
+                labeled_stack[frame_idx],
+                frame_measurements[prediction_col].tolist(),
+                frame_measurements[label_col].tolist(),
+                value_map=value_map,
+                background_value=background_value,
+            )
+        )
+
+    return np.stack(mapped_frames, axis=0)

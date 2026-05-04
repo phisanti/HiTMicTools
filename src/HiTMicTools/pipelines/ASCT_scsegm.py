@@ -16,7 +16,7 @@ from HiTMicTools.pipelines.base_pipeline import BasePipeline
 from HiTMicTools.img_processing.img_processor import ImagePreprocessor
 from HiTMicTools.img_processing.array_ops import convert_image
 from HiTMicTools.img_processing.img_ops import measure_background_intensity
-from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels
+from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels_by_frame
 from HiTMicTools.utils import get_timestamps, remove_file_extension
 from HiTMicTools.roianalysis import RoiAnalyser
 from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
@@ -380,20 +380,20 @@ class ASCT_scsegm(BasePipeline):
             labeled_mask_slice = img_analyser.get(
                 "labels", index=(slice(None), 0, 0), to_numpy=True
             )
-            object_class_mask = map_predictions_to_labels(
+            object_class_mask = map_predictions_to_labels_by_frame(
                 labeled_mask_slice,
-                object_classes_col,
-                fl_measurements["label"].tolist(),
+                fl_measurements,
+                "object_class",
                 value_map=class_value_map,
             )
 
             # If PI classifier was used, create a second channel for PI classification
             if self.pi_classifier is not None:
                 # Map PI classes to the labeled mask
-                pi_class_mask = map_predictions_to_labels(
+                pi_class_mask = map_predictions_to_labels_by_frame(
                     labeled_mask_slice,
-                    fl_measurements["pi_class"].tolist(),
-                    fl_measurements["label"].tolist(),
+                    fl_measurements,
+                    "pi_class",
                     value_map={"piPOS": 1, "piNEG": 2},
                 )
 
