@@ -24,19 +24,25 @@ For production use:
 pip install git+https://github.com/phisanti/HiTMicTools
 ```
 
+For updating HiTMicTools code inside an already working environment, avoid changing the dependency stack:
+```bash
+pip install --force-reinstall --no-deps git+https://github.com/phisanti/HiTMicTools
+```
+
 For development (editable install):
 ```bash
 git clone https://github.com/phisanti/HiTMicTools
 cd HiTMicTools
-pip install -e .
+pip install -e . --no-deps
 ```
 
-### Dependency Note (Hyperactive)
-HiTMicTools pins `hyperactive==4.8.0` to avoid dependency conflicts between `basicpy` and `rfdetr`.
-If you have an existing environment with a different `hyperactive` version, reinstall it explicitly:
+For rebuilding an environment reproducibly, use a matching constraint file from `constraints/`:
 ```bash
-pip install "hyperactive==4.8.0"
+pip install --extra-index-url https://download.pytorch.org/whl/cu121 -c constraints/scicore-py39-cu121.txt .
 ```
+
+### Dependency Note
+HiTMicTools bounds the scientific Python stack and pins known fragile integration points, including `hyperactive==4.8.0`, `gradient-free-optimizers==1.7.2`, `jax==0.4.23`, `jaxlib==0.4.23`, and the Basicpy/jetraw-tools Git commits. This prevents code-only updates from accidentally upgrading core packages into untested combinations.
 
 ### Required Assets
 - **Model Collection**: Download or locate the appropriate model bundle (e.g., `model_collection_tracking_20250529.zip`)

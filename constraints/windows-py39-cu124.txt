@@ -1,0 +1,33 @@
+# Known-good Sergio Windows environment for HiTMicTools 0.5.12.
+# Use with Python 3.9 and a CUDA 12.4 PyTorch install source, for example:
+#   pip install --extra-index-url https://download.pytorch.org/whl/cu124 -c constraints/windows-py39-cu124.txt .
+
+numpy==1.26.4
+scipy==1.13.1
+scikit-learn==1.6.1
+scikit-image==0.24.0
+pandas==2.3.3
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+monai==1.5.1
+tifffile==2024.8.30
+matplotlib==3.9.4
+seaborn==0.13.2
+nd2==0.10.4
+opencv-python==4.11.0.86
+opencv-python-headless==4.10.0.84
+ome-types==0.6.2
+PyYAML==6.0.3
+joblib==1.5.2
+psutil==7.0.0
+hyperactive==4.8.0
+gradient-free-optimizers==1.7.2
+jax==0.4.23
+jaxlib==0.4.23
+onnxruntime==1.19.2
+skl2onnx==1.19.1
+btrack==0.7.0
+protobuf==6.33.1
+templatematchingpy==1.0.3
+basicpy @ git+https://github.com/phisanti/BaSiCPy_scm.git@c1eb6283508ac31f0206069e497bb13b11d0b4b6
+jetraw-tools @ git+https://github.com/phisanti/jetraw_tools.git@9ebbae2908dbba72074ccc024a7962be744df30f

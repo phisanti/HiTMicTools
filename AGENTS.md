@@ -4,7 +4,7 @@
 
 **HiTMicTools** is a deep-learning-based toolkit for automated high-throughput microscopy analysis (Boeck Lab, University Hospital of Basel). It processes time-lapse microscopy images through a configurable pipeline: focus restoration → segmentation → classification → cell tracking.
 
-- **Package**: `hitmictools` v0.5.11 — Python 3.9+, `src/` layout
+- **Package**: `hitmictools` v0.5.12 — Python 3.9+, `src/` layout
 - **Entry point**: `hitmictools` CLI → `src/HiTMicTools/main.py` → `cli.py`
 - **Config**: YAML file consumed by `ConfReader` → attribute-accessible dict
 - **Models**: bundled as ZIP (model collection) or loaded individually
@@ -73,6 +73,7 @@ All inherit from `base_pipeline.py` which handles: model loading, file discovery
 ## Development Notes
 
 - **Version bumps are mandatory**: every code-changing PR/update that users may install must increment `pyproject.toml` before merge. Use normal PEP 440 ordering with no leading-zero patch numbers (`0.5.4`, then `0.5.5`, never `0.5.04`). This prevents `pip install --upgrade` from silently keeping stale Scicore/user installs.
+- **Dependency changes are conservative**: keep runtime dependencies bounded in `pyproject.toml`; pin known fragile packages exactly; update `constraints/` when a known-good Scicore/Windows environment changes. For code-only updates inside an existing working environment, prefer `pip install -e . --no-deps` or `pip install --force-reinstall --no-deps ...` so pip does not unexpectedly upgrade the scientific stack.
 - **GPU handling**: `ReserveResource` context manager must be used for any GPU-intensive work in multi-process contexts to avoid OOM. Check `resource_management/reserveresource.py`.
 - **torch.compile**: Configurable per model via metadata. See recent commits for implementation pattern.
 - **Model bundles**: ZIP files with standardized naming + `config.yml` manifest. Use `model_bundler.py`.

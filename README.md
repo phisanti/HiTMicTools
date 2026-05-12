@@ -19,36 +19,33 @@ A comprehensive toolkit for High-Throughput Microscopy Analysis developed by the
 HiTMicTools requires Python 3.9 or later and depends on the following packages:
 
 ```
-numpy
-torch
-torchvision
-matplotlib
-seaborn
-pandas
-scikit-learn
-scikit-image
-scipy
-tifffile
-monai
-pystackreg
-GPUtil
-psutil
-nd2
-opencv-python
-ome-types
-pyyaml
-joblib
-jax==0.4.23
-jaxlib==0.4.23 
-rfdetr
+numpy>=1.26,<2
+torch>=2.4,<2.7
+torchvision>=0.19,<0.22
+matplotlib>=3.9,<3.10
+seaborn>=0.13,<0.14
+pandas>=2.3,<2.4
+scikit-learn>=1.6,<1.7
+scikit-image>=0.24,<0.25
+scipy>=1.13,<1.14
+tifffile>=2024.8,<2025.0
+monai>=1.5,<1.6
+templatematchingpy>=1.0.3,<1.1
+psutil>=5.9,<8
+nd2>=0.10,<0.11
+opencv-python>=4.10,<4.12
+ome-types>=0.6,<0.7
+pyyaml>=6.0,<6.1
+joblib>=1.5,<1.6
 hyperactive==4.8.0
-basicpy==1.2.0b0
-jetraw-tools
-onnxruntime
-skl2onnx
+gradient-free-optimizers==1.7.2
+jax==0.4.23
+jaxlib==0.4.23
+onnxruntime>=1.19,<1.20
+skl2onnx>=1.19,<1.20
+btrack>=0.7,<0.8
 ```
-Starting with the `1.2.0b0` release, `basicpy` now follows semantic versioning for the beta series, so we pin the package explicitly and still keep the JAX versions fixed because Basicpy itself pulls in constrained `jax`/`jaxlib` builds. This also helps to avoid the version blocking of scipy and other packages by basicpy.
-We also pin `hyperactive==4.8.0` to avoid dependency resolution conflicts between `basicpy` and `rfdetr`.
+HiTMicTools bounds the scientific Python stack to avoid unexpected breakage during reinstalls. `hyperactive==4.8.0`, `gradient-free-optimizers==1.7.2`, `jax==0.4.23`, `jaxlib==0.4.23`, and the Basicpy/jetraw-tools Git commits are pinned because they are known fragile integration points.
 
 For CUDA support (optional):
 ```
@@ -75,11 +72,21 @@ Then, this project can be easily installed via pip from the repository:
 pip install git+https://github.com/phisanti/HiTMicTools
 ```
 
+For updating HiTMicTools code inside an existing working environment, avoid dependency churn:
+```bash
+pip install --force-reinstall --no-deps git+https://github.com/phisanti/HiTMicTools
+```
+
+For reproducible environment rebuilds, use the known-good constraint files in `constraints/`, choosing the one that matches the target CUDA/PyTorch build:
+```bash
+pip install --extra-index-url https://download.pytorch.org/whl/cu121 -c constraints/scicore-py39-cu121.txt git+https://github.com/phisanti/HiTMicTools
+```
+
 However, if you would like to contribute or suggest any change, you can also clone the source:
 ```bash
 git clone https://github.com/phisanti/HiTMicTools
 cd HiTMicTools
-pip install -e .
+pip install -e . --no-deps
 ```
 ### Optional: Cell Tracking with btrack
 
