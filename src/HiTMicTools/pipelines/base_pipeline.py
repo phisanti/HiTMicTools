@@ -6,12 +6,15 @@ import zipfile
 import tempfile
 import yaml
 import logging
+import subprocess
+import re
 
 # Resources imports
 import concurrent.futures
 import gc
 import multiprocessing
 from contextlib import contextmanager
+from pathlib import Path
 
 # Type annotations and
 from typing import List, Dict, Optional, Any
@@ -19,6 +22,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 # Local imports
+import HiTMicTools
 from HiTMicTools import __version__
 from HiTMicTools.resource_management.memlogger import MemoryLogger
 from HiTMicTools.model_components.segmentation_model import Segmentator
@@ -42,6 +46,72 @@ def managed_resource(*objects):
     for obj in objects:
         del obj
     gc.collect()
+
+
+def _get_hitmictools_source_path() -> str:
+    """Return the imported package directory for provenance logs."""
+    return str(Path(HiTMicTools.__file__).resolve().parent)
+
+
+def _get_hitmictools_git_commit(source_path: str) -> str:
+    """Return the current git commit for editable/source installs, if available."""
+    try:
+        commit_result = subprocess.run(
+            ["git", "-C", source_path, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+        commit = commit_result.stdout.strip()
+
+        status_result = subprocess.run(
+            ["git", "-C", source_path, "status", "--short"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+        if status_result.stdout.strip():
+            return f"{commit}+dirty"
+        return commit
+    except Exception:
+        return "unknown"
+
+
+def _get_source_pyproject_version(source_path: str) -> str:
+    """Return pyproject project.version for source checkouts, if available."""
+    for path in [Path(source_path), *Path(source_path).parents]:
+        pyproject_path = path / "pyproject.toml"
+        if not pyproject_path.exists():
+            continue
+        try:
+            in_project_section = False
+            for line in pyproject_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped == "[project]":
+                    in_project_section = True
+                    continue
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    in_project_section = False
+                if in_project_section:
+                    match = re.match(r'version\s*=\s*"([^"]+)"', stripped)
+                    if match:
+                        return match.group(1)
+        except OSError:
+            return "unknown"
+    return "unknown"
+
+
+def get_hitmictools_provenance() -> Dict[str, str]:
+    """Collect version/source provenance for analysis logs."""
+    source_path = _get_hitmictools_source_path()
+    return {
+        "version": __version__,
+        "source_version": _get_source_pyproject_version(source_path),
+        "source_path": source_path,
+        "git_commit": _get_hitmictools_git_commit(source_path),
+    }
 
 
 class BasePipeline(ABC):
@@ -139,6 +209,22 @@ class BasePipeline(ABC):
 
         # Delete the logger instance
         del logging.Logger.manager.loggerDict[logger.name]
+
+    def log_runtime_provenance(self) -> None:
+        """Log enough package provenance to debug stale installs."""
+        provenance = get_hitmictools_provenance()
+        self.main_logger.info(
+            f"Running hitmictools version {provenance['version']}"
+        )
+        self.main_logger.info(
+            f"HiTMicTools source pyproject version: {provenance['source_version']}"
+        )
+        self.main_logger.info(
+            f"HiTMicTools source path: {provenance['source_path']}"
+        )
+        self.main_logger.info(
+            f"HiTMicTools git commit: {provenance['git_commit']}"
+        )
 
     def load_model_fromdict(self, model_type: str, config_dic: Dict[str, Any]) -> None:
         """
@@ -591,7 +677,7 @@ class BasePipeline(ABC):
             - This method processes files sequentially, unlike process_folder_parallel.
             - The method will analyze each image file using the analyse_image method.
         """
-        self.main_logger.info(f"Running hitmictools version {__version__}")
+        self.log_runtime_provenance()
         self.main_logger.info(f"Processing folder: {self.input_path}")
         self.main_logger.info(f"Output folder: {self.output_path}")
         self.main_logger.info(f"Files pattern: {files_pattern}")
@@ -680,7 +766,7 @@ class BasePipeline(ABC):
             self.main_logger.warning("No files to process. Exiting.")
             return
 
-        self.main_logger.info(f"Running hitmictools version {__version__}")
+        self.log_runtime_provenance()
         self.main_logger.info(f"Processing folder: {self.input_path}")
         self.main_logger.info(f"Output folder: {self.output_path}")
         self.main_logger.info(f"Files pattern: {files_pattern}")
