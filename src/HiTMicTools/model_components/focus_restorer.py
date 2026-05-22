@@ -129,6 +129,9 @@ class FocusRestorer(BaseModel):
         else:
             img_tensor = img_tensor.float()
 
+        kwargs.setdefault("mode", "gaussian")
+        kwargs.setdefault("padding_mode", "reflect")
+
         # Create SlidingWindowInferer
         inferer = SlidingWindowInferer(
             roi_size=self.patch_size, overlap=self.overlap_ratio, **kwargs
