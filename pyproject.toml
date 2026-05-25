@@ -63,6 +63,12 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Static assets that ship inside the installed package. The CellAsic
+# ID-block template is loaded via importlib.resources at runtime; if it
+# isn't declared here, building a wheel for Scicore strips it.
+"HiTMicTools.img_processing.cellasic.templates" = ["*.png"]
+
 [project.optional-dependencies]
 bacdetr = [
     "bacdetr @ git+https://github.com/phisanti/BacDETRSegm.git@develop#subdirectory=bacdetr",

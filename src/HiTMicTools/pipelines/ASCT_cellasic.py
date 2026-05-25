@@ -1,0 +1,647 @@
+"""ASCT pipeline for CellAsic Onix2 microfluidic data.
+
+Same as ASCT_scsegm but adds a target-line crop step after focus
+restoration and before segmentation. The crop:
+
+  1. Detects the ID-block fiducial (dice-face-5 for line 5) via Sobel-edge
+     template matching on the focus-restored BF channel.
+  2. Computes the small plate-placement tilt from a least-squares line
+     through the detected centres.
+  3. Rotates the (T, C, Y, X) stack so the target line becomes horizontal.
+  4. Detects the horizontal silicone walls bounding the line via
+     row-median projection and crops just inside them. The crop keeps the
+     full image width; left/right chamber-wall cropping is intentionally
+     disabled because it is brittle in dense CellAsic wells.
+
+Why this pipeline exists: the ASCT_scsegm pipeline runs on agarose-pad
+data where the FOV is one big homogeneous well. CellAsic FOVs contain
+adjacent trap rows ("lines") whose pillars and IDs look enough like
+bacteria to confuse the segmenter. Running v8_2 (line-5-aware
+checkpoint) on uncropped CellAsic FOVs would be out-of-distribution and
+would produce false detections on lines 4 and 6.
+
+Config additions vs ASCT_scsegm:
+    crop_to_target_line: bool (default True)
+        Toggle the crop step. Set False to debug the rest of the
+        pipeline without changing image dimensions.
+    line5_template_path: Optional[str] (default None)
+        Override the default packaged ID-block template. None uses
+        HiTMicTools.img_processing.cellasic.templates.id_block.png.
+    cellasic_calibration_path: Optional[str] (default None)
+        Path to a calibration JSON with x_wall / y_wall / tilt sub-dicts
+        (see e015_CellAsic_Greta/data/cropped_line5/calibration.json for
+        format). If given, the crop uses fixed offsets from the
+        calibration (recommended for bacteria-heavy frames). If None,
+        per-frame wall detection is used (only reliable on clean / empty
+        frames).
+    cellasic_gaussian_sigma: float (default 2.0)
+        Pre-Sobel smoothing applied to BF before template matching. Use
+        2.0 on raw .nd2 BF (pillar speckle dominates the gradient); 0
+        on post-NAFNet input.
+    cellasic_ncc_threshold: float (default 0.5)
+        NCC score floor for ID-block detection. 0.5 with sigma=2 cleanly
+        rejects the line-4 / line-6 dice blocks.
+"""
+import json
+import os
+import gc
+import tifffile
+from typing import Optional, List
+import pandas as pd
+import numpy as np
+
+# Local imports
+from HiTMicTools.resource_management.memlogger import MemoryLogger
+from HiTMicTools.resource_management.sysutils import (
+    empty_gpu_cache,
+    get_device,
+)
+from HiTMicTools.resource_management.reserveresource import ReserveResource
+from HiTMicTools.pipelines.base_pipeline import BasePipeline
+from HiTMicTools.img_processing.img_processor import ImagePreprocessor
+from HiTMicTools.img_processing.array_ops import convert_image
+from HiTMicTools.img_processing.img_ops import measure_background_intensity
+from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels_by_frame
+from HiTMicTools.img_processing.cellasic import (
+    crop_to_target_line,
+    crop_with_calibration,
+    load_default_template,
+    load_template,
+)
+from HiTMicTools.img_processing.cellasic.crop import NoIDBlockDetected
+from HiTMicTools.utils import get_timestamps, remove_file_extension
+from HiTMicTools.roianalysis import RoiAnalyser
+from HiTMicTools.data_analysis.analysis_tools import roi_skewness, roi_std_dev
+
+from jetraw_tools.image_reader import ImageReader
+
+
+class ASCT_cellasic(BasePipeline):
+    """ASCT pipeline for CellAsic Onix2 microfluidic chambers.
+
+    Identical to ASCT_scsegm except for one inserted step (2.5) that
+    crops the (T, C, Y, X) stack to the target line strip after focus
+    restoration. Everything else -- background correction, alignment,
+    segmentation, measurements, tracking, PI classification, export -- is
+    unchanged.
+    """
+
+    # Models required by this pipeline (same as ASCT_scsegm)
+    required_models = {"bf_focus", "fl_focus", "sc_segmenter", "pi_classification"}
+
+    def analyse_image(
+        self,
+        file_i: str,
+        name: str,
+        export_labeled_mask: bool = True,
+        export_aligned_image: bool = True,
+    ) -> None:
+        """Pipeline analysis for each image."""
+
+        # 1. Read Image:
+        device = get_device()
+        is_cuda = device.type == "cuda"
+        movie_name = remove_file_extension(name)
+        name = movie_name
+        img_logger = self.setup_logger(self.output_path, movie_name)
+        img_logger.info(f"Start analysis for {movie_name}")
+        reference_channel = self.reference_channel
+        pi_channel = self.pi_channel
+        align_frames = self.align_frames
+        method = self.method
+
+        img_logger.info("1 - Reading image", show_memory=True)
+        image_reader = ImageReader(file_i, self.file_type)
+        img, metadata = image_reader.read_image()
+        pixel_size = metadata.images[0].pixels.physical_size_x
+        size_x = metadata.images[0].pixels.size_x
+        size_y = metadata.images[0].pixels.size_y
+        nSlices = metadata.images[0].pixels.size_z
+        nChannels = metadata.images[0].pixels.size_c
+        nFrames = metadata.images[0].pixels.size_t
+
+        # 2 Pre-process image --------------------------------------------
+        img_logger.info(
+            f"Image shape: {img.shape}, pixel size: {pixel_size} µm. Reshaped to (frames={nFrames}, channels={nChannels}, slices={nSlices}, x={size_x}, y={size_y})"
+        )
+        img = img.reshape(nFrames, nChannels, size_x, size_y)
+        ip = ImagePreprocessor(img, stack_order="TCXY")
+        img = np.zeros((1, 1, 1, 1))
+
+        # 2.1 Remove background
+        img_logger.info("2.1 - Preprocessing image", show_memory=True)
+        img_logger.info(f"Preprocessed image shape: {ip.img.shape}")
+
+        # 2.2 Align frames if required
+        if align_frames:
+            img_logger.info("2.2 - Aligning frames in the stack", show_memory=True)
+            ip.align_image(
+                ref_channel=0, ref_slice=-1, crop_image=True, reference_type="dynamic"
+            )
+            img_logger.info("2.2 - Frame alignment completed", show_memory=True)
+        size_x, size_y = ip.img.shape[-2], ip.img.shape[-1]
+        img_logger.info("2.3 - Detecting and fixing border wells")
+        ip.detect_fix_well(nchannels=0, nslices=0, nframes=range(nFrames))
+        img_logger.info(
+            f"Reference channel intensity before background removal:\n{self.check_px_values(ip, reference_channel, round=3)}"
+        )
+
+        self.clear_background(
+            ip,
+            channel=reference_channel,
+            nFrames=range(nFrames),
+            method=method,
+            pixel_size=pixel_size,
+        )
+        self.clear_background(
+            ip, channel=pi_channel, nFrames=range(nFrames), method=method
+        )
+
+        # 2.4 Focus restoration (conditional)
+        if getattr(self, "focus_correction", True):
+            img_logger.info(
+                "2.4 - Restoring focus in the reference channel", show_memory=True
+            )
+            img_logger.info(
+                f"Reference channel intensity before focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
+            )
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                ip.img[:, 0, reference_channel] = self.bf_focus_restorer.predict(
+                    ip.img[:, 0, reference_channel],
+                    rescale=False,
+                    batch_size=1,
+                    buffer_steps=4,
+                    buffer_dim=-1,
+                    sw_batch_size=1,
+                )
+            img_logger.info("2.4 - Restoring focus in the PI channel", show_memory=True)
+            img_logger.info(
+                f"PI channel intensity before focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            )
+            with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+                ip.img[:, 0, pi_channel] = self.fl_focus_restorer.predict(
+                    ip.img[:, 0, pi_channel],
+                    batch_size=1,
+                    buffer_steps=4,
+                    buffer_dim=-1,
+                    sw_batch_size=1,
+                    padding_mode="reflect",
+                )
+            img_logger.info(
+                f"Reference channel intensity after focus restoration:\n{self.check_px_values(ip, reference_channel, round=3)}"
+            )
+            img_logger.info(
+                f"PI channel intensity after focus restoration:\n{self.check_px_values(ip, pi_channel, round=3)}"
+            )
+        else:
+            img_logger.info("2.4 - Focus correction disabled, skipping focus restoration", show_memory=True)
+
+        # 2.5 CellAsic target-line crop --------------------------------
+        # Detect the ID-block fiducial on the focus-restored BF channel,
+        # compute the small tilt, rotate, and crop to the target line.
+        # This is the only step that differs from ASCT_scsegm.
+        if getattr(self, "crop_to_target_line", True):
+            img_logger.info("2.5 - Cropping to target line (CellAsic)", show_memory=True)
+
+            sigma = float(getattr(self, "cellasic_gaussian_sigma", 2.0))
+            ncc_thr = float(getattr(self, "cellasic_ncc_threshold", 0.5))
+
+            # Load template (packaged default or user override). The
+            # template's pre-Sobel smoothing must match the BF's, so
+            # gaussian_sigma is the same here as in the crop call below.
+            tpl_override = getattr(self, "line5_template_path", None)
+            if tpl_override:
+                template_sobel = load_template(tpl_override, gaussian_sigma=sigma)
+                img_logger.info(f"  using user-supplied template: {tpl_override}  (sigma={sigma})")
+            else:
+                template_sobel = load_default_template(gaussian_sigma=sigma)
+                img_logger.info(f"  using packaged default ID-block template  (sigma={sigma})")
+
+            # Optional calibration JSON: tilt clamp + fixed Y/X offsets.
+            # Recommended for bacteria-heavy frames where per-frame wall
+            # detection is brittle.
+            cal_path = getattr(self, "cellasic_calibration_path", None)
+            calibration = None
+            if cal_path:
+                with open(cal_path) as f:
+                    calibration = json.load(f)
+                img_logger.info(f"  using calibration: {cal_path}")
+            else:
+                img_logger.info("  no calibration -- per-frame wall detection")
+
+            # ip.img has shape (T, S, C, dim2, dim3) with S=1 in this
+            # pipeline. ASCT_scsegm's reshape uses (T, C, size_x, size_y)
+            # but the standalone validation (which read the transformed.tiff
+            # output) found ID blocks correctly assuming standard image
+            # convention (rows=dim2, cols=dim3). The CellAsic chambers in
+            # the e015 minitest are near-square (2714-2720 px on either
+            # side) so the distinction is invisible in practice. If a
+            # future acquisition is strongly non-square AND the order is
+            # actually (X, Y) here, the assertion below will trip when the
+            # ID block centre lands far from the expected line-5 Y range.
+            stack_tcxy = ip.img[:, 0]  # (T, C, dim2, dim3)
+
+            try:
+                if calibration is not None:
+                    cropped_tcxy, crop_info = crop_with_calibration(
+                        stack_tcxy,
+                        template_sobel,
+                        calibration,
+                        bf_channel=reference_channel,
+                        detect_frame=0,
+                        gaussian_sigma=sigma,
+                        threshold=ncc_thr,
+                    )
+                else:
+                    cropped_tcxy, crop_info = crop_to_target_line(
+                        stack_tcxy,
+                        template_sobel,
+                        bf_channel=reference_channel,
+                        detect_frame=0,
+                        gaussian_sigma=sigma,
+                        threshold=ncc_thr,
+                        crop_x_walls=False,
+                    )
+            except NoIDBlockDetected as e:
+                img_logger.error(f"2.5 - target-line crop failed: {e}")
+                raise
+
+            # Sanity check: the detected ID block centre should sit near
+            # the middle of the input height (line 5 is the middle line of
+            # the chamber). If the axes are swapped, we'd see the centre
+            # at an extreme position.
+            cx_det, cy_det = crop_info["centre_xy"]
+            H_in = stack_tcxy.shape[2]
+            if not (0.2 * H_in < cy_det < 0.8 * H_in):
+                raise RuntimeError(
+                    f"2.5 - ID block centre Y={cy_det:.0f} is outside the expected "
+                    f"middle 60% of image height ({H_in}). Axis order may be wrong, "
+                    f"or this FOV may not show line 5. Detections: {crop_info['detections']}"
+                )
+
+            img_logger.info(
+                f"  detections={crop_info['n_detections']}  "
+                f"angle={crop_info['angle_deg']:+.3f}deg  "
+                f"crop Y=[{crop_info['crop_y0']},{crop_info['crop_y1']}] "
+                f"({crop_info['crop_height']}px)  mode={crop_info['crop_mode']}"
+            )
+
+            # Re-insert slice axis: (T, C, X, Y) -> (T, 1, C, X, Y)
+            ip.img = cropped_tcxy[:, np.newaxis, :, :, :]
+            size_x, size_y = ip.img.shape[-2], ip.img.shape[-1]
+            img_logger.info(f"  image shape after crop: {ip.img.shape}", show_memory=True)
+        else:
+            img_logger.info("2.5 - target-line crop disabled, skipping", show_memory=True)
+
+        # 2.6 Remove original image (not used after background corr) to save mem
+        ip.img_original = np.zeros((1, 1, 1, 1, 1))
+
+        # 3. Single-step instance segmentation + classification
+        img_logger.info("3 - Running single-step instance segmentation and classification", show_memory=True, cuda=is_cuda)
+
+        with ReserveResource(device, 4.0, logger=img_logger, timeout=120):
+            frames = ip.img[:, 0, reference_channel, :, :]
+            frames = np.clip(frames, 0, 1)
+
+            seg_temporal_buffer_size = getattr(self, "sc_segmenter_temporal_buffer_size", None)
+            seg_batch_size = getattr(self, "sc_segmenter_batch_size", None)
+            stacked_labeled_masks, all_bboxes, all_class_ids, all_scores = self.sc_segmenter.predict(
+                frames,
+                channel_index=0,
+                temporal_buffer_size=seg_temporal_buffer_size,
+                batch_size=seg_batch_size,
+                normalize_to_255=False,
+                output_shape="HW",
+            )
+
+        img_logger.info("3 - Instance segmentation completed", show_memory=True, cuda=is_cuda)
+
+        total_detections = sum(len(bboxes) for bboxes in all_bboxes)
+        total_instances = np.sum([len(np.unique(stacked_labeled_masks[i])) - 1 for i in range(nFrames)])
+
+        self._log_detection_summary(
+            img_logger=img_logger,
+            n_frames=nFrames,
+            total_detections=total_detections,
+            total_instances=total_instances,
+            class_ids=all_class_ids,
+            class_scores=all_scores,
+        )
+
+        img_logger.info("3.2 - Creating ROI analyser from labeled masks", show_memory=True)
+
+        img_analyser = RoiAnalyser.from_labeled_mask(
+            ip.img,
+            stacked_labeled_masks,
+            stack_order=("TSCXY", "TXY")
+        )
+
+        del ip
+
+        detection_records = []
+        for frame_idx, (frame_classes, frame_scores) in enumerate(
+            zip(all_class_ids, all_scores)
+        ):
+            for label_idx, (cid, score) in enumerate(zip(frame_classes, frame_scores)):
+                if self.class_dict:
+                    class_name = self.class_dict[int(cid)]
+                else:
+                    class_name = f"class_{int(cid)}"
+                detection_records.append(
+                    (frame_idx, label_idx + 1, class_name, float(score))
+                )
+        detection_df = pd.DataFrame(
+            detection_records,
+            columns=["frame", "label", "object_class", "detection_score"],
+        )
+
+        img_logger.info(
+            f"3.2 - {img_analyser.total_rois} max label per frame | "
+            f"{len(detection_records)} detection records from segmenter"
+        )
+
+        # 4.1 Calc. measurements --------------------------------------------
+        img_logger.info("4 - Starting measurements", show_memory=True)
+        img_logger.info("4.1 - Extracting background fluorescence intensity")
+        bck_fl = measure_background_intensity(
+            img_analyser.get("image", to_numpy=False),
+            img_analyser.get("labels", to_numpy=False),
+            target_channel=pi_channel,
+        )
+
+        fl_prop = [
+            "label",
+            "centroid",
+            "max_intensity",
+            "min_intensity",
+            "mean_intensity",
+            "area",
+            "major_axis_length",
+            "minor_axis_length",
+            "solidity",
+            "orientation",
+        ]
+        img_logger.info("4.2 - Extracting fluorescence measurements")
+        fl_measurements = img_analyser.get_roi_measurements(
+            target_channel=pi_channel,
+            properties=fl_prop,
+            extra_properties=(roi_skewness, roi_std_dev),
+        )
+
+        n_before = len(fl_measurements)
+        fl_measurements = fl_measurements.merge(
+            detection_df, on=["frame", "label"], how="left"
+        )
+        fl_measurements["object_class"] = fl_measurements["object_class"].fillna("unknown")
+        fl_measurements["detection_score"] = fl_measurements["detection_score"].fillna(0.0)
+        n_unknown = (fl_measurements["object_class"] == "unknown").sum()
+        if n_unknown > 0:
+            img_logger.warning(
+                f"class merge: {n_unknown}/{n_before} ROIs could not be matched "
+                f"to a detection — marked as 'unknown'"
+            )
+        else:
+            img_logger.info(
+                f"class merge: all {n_before} ROIs matched successfully"
+            )
+
+        img_logger.info("4.3 - Extracting time metadata")
+        time_data = get_timestamps(metadata, timeformat="%Y-%m-%d %H:%M:%S")
+        fl_measurements = pd.merge(fl_measurements, time_data, on="frame", how="left")
+        fl_measurements = pd.merge(fl_measurements, bck_fl, on="frame", how="left")
+        fl_measurements[
+            ["rel_max_intensity", "rel_min_intensity", "rel_mean_intensity"]
+        ] = fl_measurements[["max_intensity", "min_intensity", "mean_intensity"]].div(
+            fl_measurements["background"], axis=0
+        )
+
+        # 4.4 Object tracking (if enabled)
+        if self.tracking and self.cell_tracker is not None:
+            img_logger.info("4.4 - Running object tracking")
+            track_features = fl_prop[5:10]
+            self.cell_tracker.set_features(track_features)
+            try:
+                fl_measurements = self.cell_tracker.track_objects(
+                    fl_measurements, volume_bounds=(size_x, size_y), logger=img_logger
+                )
+                img_logger.info("4.4 - Object tracking completed successfully")
+            except Exception as e:
+                img_logger.error(f"Object tracking failed: {e}")
+
+        counts_per_frame = fl_measurements["frame"].value_counts().sort_index()
+        img_logger.info(f"4 - Object counts per frame:\n{counts_per_frame.to_string()}")
+        img_logger.info("4 - Measurements completed", show_memory=True)
+
+        # 4.5 PI classification (if enabled)
+        if self.pi_classifier is not None:
+            img_logger.info("4.5 - Running PI classification", show_memory=True)
+            predictions = self.pi_classifier.predict(
+                fl_measurements[self.pi_classifier.feature_names_in_]
+            )
+            fl_measurements["pi_class"] = predictions
+
+            if (
+                self.tracking
+                and self.cell_tracker is not None
+                and hasattr(self.cell_tracker, "apply_pipos_lockin")
+            ):
+                img_logger.info("4.6 - Applying piPOS lock-in")
+                fl_measurements = self.cell_tracker.apply_pipos_lockin(
+                    fl_measurements, logger=img_logger
+                )
+
+            fl_measurements["file"] = name
+
+            d_summary = self.generate_data_summary(
+                fl_measurements,
+                [
+                    "file",
+                    "frame",
+                    "channel",
+                    "date_time",
+                    "timestep",
+                    "abslag_in_s",
+                    "object_class",
+                ],
+                img_logger,
+            )
+        else:
+            d_summary = pd.DataFrame()
+
+        # 5. Export data --------------------------------------------
+        export_path = os.path.join(self.output_path, name)
+        img_logger.info(f"5 - Writing output data to {export_path}")
+
+        fl_measurements.to_csv(export_path + "_fl.csv")
+        d_summary.to_csv(export_path + "_summary.csv")
+
+        if export_labeled_mask:
+            object_classes_col = fl_measurements["object_class"].tolist()
+            if self.class_dict:
+                class_value_map = {
+                    name: class_idx + 1
+                    for class_idx, name in sorted(self.class_dict.items())
+                }
+            else:
+                unique_class_names = sorted(set(object_classes_col))
+                class_value_map = {
+                    class_name: idx + 1
+                    for idx, class_name in enumerate(unique_class_names)
+                }
+
+            labeled_mask_slice = img_analyser.get(
+                "labels", index=(slice(None), 0, 0), to_numpy=True
+            )
+            object_class_mask = map_predictions_to_labels_by_frame(
+                labeled_mask_slice,
+                fl_measurements,
+                "object_class",
+                value_map=class_value_map,
+            )
+
+            if self.pi_classifier is not None:
+                pi_class_mask = map_predictions_to_labels_by_frame(
+                    labeled_mask_slice,
+                    fl_measurements,
+                    "pi_class",
+                    value_map={"piPOS": 1, "piNEG": 2},
+                )
+                combined_mask = np.stack([object_class_mask, pi_class_mask], axis=1)
+                labs_8bit = combined_mask.astype(np.uint8)
+                axes = "TCYX"
+                log_msg = (
+                    "Exported labeled mask with object and PI classification channels"
+                )
+            else:
+                labs_8bit = object_class_mask.astype(np.uint8)
+                axes = "TYX"
+                log_msg = "Exported labeled mask with object classification channel"
+
+            tifffile.imwrite(
+                export_path + "_labels.tiff",
+                labs_8bit,
+                imagej=True,
+                metadata={"axes": axes},
+            )
+            img_logger.info(log_msg)
+
+        if export_aligned_image:
+            image_8bit = convert_image(
+                img_analyser.get("image", to_numpy=True),
+                np.uint8,
+            )
+            tifffile.imwrite(export_path + "_transformed.tiff", image_8bit, imagej=True)
+
+        img_logger.info(f"Analysis completed for {movie_name}", show_memory=True)
+        del stacked_labeled_masks, img, fl_measurements, d_summary, img_analyser
+        gc.collect()
+        empty_gpu_cache(device)
+        img_logger.info("Garbage collection completed", show_memory=True)
+
+        self.remove_logger(img_logger)
+
+        return name
+
+    # ----- helpers (inherited verbatim from ASCT_scsegm conceptually; -----
+    # copied here to keep the pipeline file self-contained) -----
+
+    def clear_background(
+        self,
+        ip: ImagePreprocessor,
+        channel: int,
+        nFrames: range,
+        method: str,
+        pixel_size: Optional[float] = None,
+    ) -> None:
+        """Remove background from images using specified method."""
+        if method == "basicpy_fl" and channel == self.reference_channel:
+            method = "standard"
+        elif method == "basicpy_fl" and channel == self.pi_channel:
+            method = "basicpy"
+
+        methods = {
+            "standard": [
+                {
+                    "nframes": nFrames,
+                    "nchannels": channel,
+                    "nslices": 0,
+                    "sigma_r": 20,
+                    "method": "divide",
+                }
+            ],
+            "basicpy": [
+                {
+                    "nframes": nFrames,
+                    "nchannels": channel,
+                    "nslices": 0,
+                    "method": "basicpy",
+                    "smoothness_flatfield": 5,
+                    "smoothness_darkfield": 5,
+                    "get_darkfield": False,
+                    "sort_intensity": False,
+                    "fitting_mode": "approximate",
+                }
+            ],
+        }
+
+        if method not in methods:
+            raise ValueError(f"Invalid method: {method}")
+
+        for params in methods[method]:
+            if method == "basicpy":
+                ip.clear_image_background(**params)
+            else:
+                ip.clear_image_background(**params, unit="um", pixel_size=pixel_size)
+
+    def generate_data_summary(
+        self,
+        fl_measurements: pd.DataFrame,
+        by_list: List[str],
+        img_logger: MemoryLogger,
+    ) -> pd.DataFrame:
+        """Aggregate fluorescence measurements with PI classification."""
+        try:
+            img_logger.info(f"Group data by {by_list}")
+            d_summary = (
+                fl_measurements.groupby(by_list)
+                .agg(
+                    total_count=("label", "count"),
+                    pi_class_neg=("pi_class", lambda x: (x == "piNEG").sum()),
+                    pi_class_pos=("pi_class", lambda x: (x == "piPOS").sum()),
+                    area_pineg=(
+                        "area",
+                        lambda x: x[
+                            fl_measurements.loc[x.index, "pi_class"] == "piNEG"
+                        ].sum(),
+                    ),
+                    area_pipos=(
+                        "area",
+                        lambda x: x[
+                            fl_measurements.loc[x.index, "pi_class"] == "piPOS"
+                        ].sum(),
+                    ),
+                    area_total=("area", "sum"),
+                )
+                .reset_index()
+            )
+
+            img_logger.info(
+                f"Groupby operation completed successfully. Shape of d_summary: {d_summary.shape}"
+            )
+        except Exception as e:
+            img_logger.error(f"Error during groupby operation: {str(e)}")
+            img_logger.error(f"Columns in fl_measurements: {fl_measurements.columns}")
+            img_logger.error(
+                f"Unique values in 'pi_class': {fl_measurements['pi_class'].unique()}"
+            )
+            d_summary = pd.DataFrame()
+
+        img_logger.info("d_summary created successfully", show_memory=True)
+
+        return d_summary
+
+    @staticmethod
+    def check_px_values(ip, channel: int, round: int = None) -> np.ndarray:
+        """Calculate mean pixel intensity across frames for a given channel."""
+        means = np.mean(ip.img[:, 0, channel], axis=(1, 2))
+        return np.round(means, round) if round is not None else means
