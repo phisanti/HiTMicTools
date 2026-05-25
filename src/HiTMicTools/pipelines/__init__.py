@@ -13,6 +13,7 @@ from HiTMicTools.pipelines.base_pipeline import BasePipeline
 from HiTMicTools.pipelines.ASCT_focusrestore import ASCT_focusRestoration
 from HiTMicTools.pipelines.ASCT_ImageProcessing import ASCTImageProcessing
 from HiTMicTools.pipelines.ASCT_scsegm import ASCT_scsegm
+from HiTMicTools.pipelines.ASCT_cellasic import ASCT_cellasic
 from HiTMicTools.pipelines.ASCT_zaslavier import ASCT_zaslavier
 from HiTMicTools.pipelines.oof_detection import OOF_detection
 
@@ -50,6 +51,7 @@ PIPELINE_REGISTRY: Dict[str, PipelineMetadata] = {
     "ASCT_focusrestore": PipelineMetadata(ASCT_focusRestoration),
     "ASCT_ImageProcessing": PipelineMetadata(ASCTImageProcessing),
     "ASCT_scsegm": PipelineMetadata(ASCT_scsegm),
+    "ASCT_cellasic": PipelineMetadata(ASCT_cellasic),
     "ASCT_zaslavier": PipelineMetadata(ASCT_zaslavier),
     "oof_detection": PipelineMetadata(OOF_detection),
 }
@@ -101,6 +103,7 @@ __all__ = [
     "ASCT_focusRestoration",
     "ASCTImageProcessing",
     "ASCT_scsegm",
+    "ASCT_cellasic",
     "ASCT_zaslavier",
     "OOF_detection",
     "PipelineMetadata",
