@@ -1,5 +1,5 @@
 """Detect the ID-block fiducial in a CellAsic FOV, correct for tilt, and
-crop to the target line strip.
+crop to the target line (line 5 by default).
 
 The CellAsic Onix2 B04A chamber has 6 trap rows ("lines") whose ceilings
 have different heights. The image of each line contains:
@@ -11,22 +11,30 @@ have different heights. The image of each line contains:
   - Bacteria + debris (the actual signal).
   - At the top and bottom of the line, dark silicone walls separating it
     from the adjacent lines.
+  - At the left and right edges, dark silicone chamber walls.
 
 We detect the ID block(s) via Sobel-edge template matching (intensity-
 invariant, works across chambers with different contrast). Multiple
 detections per FOV (typical: 2-4) let us fit a line through their
-centres and recover the small plate-placement tilt (~0.3-0.7 deg). After
-tilt correction the silicone walls are horizontal bands of dark intensity
-which we find via row-median projection.
+centres and recover the small plate-placement tilt (~0.3-0.7 deg).
 
-Crop is top/bottom only (the full image width is kept). Left/right
-chamber-wall cropping was tried but proved brittle in dense CellAsic
-wells; the segmenter handles partial-FOV edge cases on its own.
+Two cropping modes share that detection + rotation prologue:
 
-Public API: see `crop_to_target_line(image, template, target_height=None)`.
+  1. Calibration mode (production) -- crop_with_calibration(...)
+     Uses fixed Y offsets from the ID-block centre, plus min/max ID-block
+     X positions in the rotated frame compared against thresholds, to
+     derive the four crop bounds. Numbers come from a calibration JSON
+     generated once on clean empty references. Robust on bacteria-heavy
+     frames where per-frame wall detection fails.
 
-Tunables are exposed as module constants; default values were calibrated
-on the e015 minitest set (5 FOVs spanning 4 chambers).
+  2. Walls mode -- crop_to_target_line(...)
+     Per-frame: rotate, then find top/bottom (and optionally left/right)
+     silicone walls via row/column-median dip detection. Brittle on
+     dense cultures; the intended use is generating the calibration JSON
+     from empty references, NOT production cropping.
+
+Tunables are exposed as module constants; defaults were calibrated on
+the e015 dataset (28 empty refs + 28 experimental FOVs across 4 chambers).
 """
 from __future__ import annotations
 
@@ -80,6 +88,62 @@ WALL_INSET_BOT = 20
 
 CROP_OFFSET_ABOVE = 946
 CROP_OFFSET_BELOW = 754
+
+
+# --- default line-5 calibration (B04A chamber) -------------------------------
+# These 8 numbers are the chip-geometry calibration used by the production
+# `ASCT_cellasic` pipeline. They tell crop_with_calibration where line-5's
+# top/bottom silicone walls (y_wall) and chamber side walls (x_wall) sit
+# relative to a detected ID-block centre, plus the maximum plausible tilt
+# (tilt clamp). They are HARDCODED rather than loaded from JSON so the
+# pipeline runs out of the box for any standard line-5 acquisition on the
+# B04A chip without users needing to manage a sidecar file.
+#
+# Source: median over 28 empty-reference frames acquired by Greta on
+# 2026-05-20 (p01-p04 of an empty B04A plate). See
+# e015_CellAsic_Greta/data/cropped_line5/calibration.json for the full
+# annotated version (same numbers + provenance notes).
+#
+# To use a different calibration (new chamber design, new imaging setup),
+# pass `cellasic_calibration_path: /path/to/your.json` in the pipeline
+# config -- the user override takes precedence over this default.
+
+DEFAULT_LINE5_CALIBRATION = {
+    "_source": "e015 empty refs (28 frames, B04A line 5, 2026-05-20)",
+    "x_wall": {
+        "_format_version": "min_max_v1",
+        "left_wall": {
+            "min_id_cx_threshold": 1170,
+            "offset_from_min_id_cx": -709,
+            "n_det_1_id_cx_threshold": 1700,
+            "id_block_spacing_px": 1033,
+        },
+        "right_wall": {
+            "max_id_cx_threshold": 1560,
+            "offset_from_max_id_cx": 664,
+            "n_det_1_id_cx_threshold": 1000,
+            "id_block_spacing_px": 1033,
+        },
+    },
+    "y_wall": {
+        "top_offset_from_id_cy": -800,
+        "bot_offset_from_id_cy": 775,
+    },
+    "tilt": {
+        "max_abs_angle_deg": 1.0,
+    },
+}
+
+
+def load_default_calibration() -> dict:
+    """Return a deep copy of the hardcoded line-5 (B04A) calibration.
+
+    Same structure as the calibration JSON consumed by
+    `crop_with_calibration`. Used by the `ASCT_cellasic` pipeline when the
+    config does not provide a `cellasic_calibration_path` override.
+    """
+    import copy
+    return copy.deepcopy(DEFAULT_LINE5_CALIBRATION)
 
 
 # =========================================================================
@@ -508,13 +572,75 @@ def compute_crop_bounds(
 
 
 # =========================================================================
-#  Top-level entry point
+#  Shared orchestration helpers (used by both modes)
 # =========================================================================
 
 class NoIDBlockDetected(RuntimeError):
     """Raised when no ID block fiducial can be located in the FOV. The
     pipeline cannot determine where the target line is, so processing
     should stop (hard fail rather than silently producing junk)."""
+
+
+def _detect_and_rotate(
+    stack: np.ndarray,
+    template_sobel: np.ndarray,
+    bf_channel: int,
+    detect_frame: int,
+    gaussian_sigma: float,
+    threshold: float,
+) -> Tuple[List[Tuple[int, int, float]], np.ndarray, float, Tuple[float, float]]:
+    """Validate stack shape, detect ID blocks on the chosen BF frame, and
+    compute the rotation matrix that levels them. Shared prologue for both
+    top-level cropping entry points.
+
+    Returns (detections, M, angle_deg, (cx, cy)).
+
+    Raises:
+        ValueError: stack is not (T, C, Y, X).
+        NoIDBlockDetected: no detections passed the NCC threshold.
+    """
+    if stack.ndim != 4:
+        raise ValueError(f"Expected (T, C, Y, X), got shape {stack.shape}")
+    _, _, H, W = stack.shape
+    bf = stack[detect_frame, bf_channel]
+    detections = detect_id_blocks(
+        bf, template_sobel,
+        threshold=threshold,
+        gaussian_sigma=gaussian_sigma,
+    )
+    if not detections:
+        raise NoIDBlockDetected(
+            f"No ID block detected on (frame={detect_frame}, channel={bf_channel}). "
+            f"Cannot locate target line; check FOV and template."
+        )
+    M, angle_deg, centre_xy = compute_rotation(detections, (H, W))
+    return detections, M, angle_deg, centre_xy
+
+
+def _apply_rotation_and_crop(
+    stack: np.ndarray, M: np.ndarray, y0: int, y1: int, x0: int, x1: int,
+) -> np.ndarray:
+    """Apply the 2x3 affine to every (t, c) plane and crop to [y0:y1, x0:x1].
+    Returns an array of shape (T, C, y1-y0, x1-x0) and the same dtype as the
+    input stack.
+    """
+    T, C, H, W = stack.shape
+    out = np.zeros((T, C, y1 - y0, x1 - x0), dtype=stack.dtype)
+    for t in range(T):
+        for c in range(C):
+            rot = cv2.warpAffine(
+                stack[t, c], M, (W, H),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            out[t, c] = rot[y0:y1, x0:x1]
+    return out
+
+
+# =========================================================================
+#  Walls mode entry point (calibration generation only -- not production)
+# =========================================================================
 
 
 def crop_to_target_line(
@@ -553,27 +679,15 @@ def crop_to_target_line(
     Raises:
         NoIDBlockDetected: if zero ID blocks are found.
     """
-    if stack.ndim != 4:
-        raise ValueError(f"Expected (T, C, Y, X), got shape {stack.shape}")
-    T, C, H, W = stack.shape
-
-    bf = stack[detect_frame, bf_channel]
-    detections = detect_id_blocks(
-        bf, template_sobel,
-        threshold=threshold,
-        gaussian_sigma=gaussian_sigma,
+    detections, M, angle_deg, (cx, cy) = _detect_and_rotate(
+        stack, template_sobel, bf_channel, detect_frame,
+        gaussian_sigma=gaussian_sigma, threshold=threshold,
     )
-    if not detections:
-        raise NoIDBlockDetected(
-            f"No ID block detected on (frame={detect_frame}, channel={bf_channel}). "
-            f"Cannot locate target line. Check FOV is within the chamber and the "
-            f"focus restoration output is valid."
-        )
+    _, _, H, W = stack.shape
 
-    M, angle_deg, (cx, cy) = compute_rotation(detections, (H, W))
-
-    # Rotate BF for wall detection
-    bf_u8 = _to_uint8_norm(bf)
+    # Rotate BF for wall detection (separate from the final stack warp
+    # because wall detection only needs the detect frame, not all T*C).
+    bf_u8 = _to_uint8_norm(stack[detect_frame, bf_channel])
     bf_rotated = cv2.warpAffine(
         bf_u8, M, (W, H),
         flags=cv2.INTER_LINEAR,
@@ -619,17 +733,7 @@ def crop_to_target_line(
         if rx is not None:
             x1 = min(W, rx - x_wall_inset)
 
-    # Apply rotation + crop band to the full stack.
-    out = np.zeros((T, C, y1 - y0, x1 - x0), dtype=stack.dtype)
-    for t in range(T):
-        for c in range(C):
-            rot = cv2.warpAffine(
-                stack[t, c], M, (W, H),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=0,
-            )
-            out[t, c] = rot[y0:y1, x0:x1]
+    out = _apply_rotation_and_crop(stack, M, y0, y1, x0, x1)
 
     info = {
         "n_detections": len(detections),
@@ -650,7 +754,7 @@ def crop_to_target_line(
 
 
 # =========================================================================
-#  Calibration application -- pre-computed JSON instead of per-frame detect
+#  Calibration mode entry point (production)
 # =========================================================================
 # These helpers consume the unified calibration JSON produced by the e015
 # calibration pipeline (see data/cropped_line5/calibration.json for format).
@@ -788,22 +892,11 @@ def crop_with_calibration(
         NoIDBlockDetected: if zero ID blocks are found.
         KeyError: if `calibration` is missing required sub-keys.
     """
-    if stack.ndim != 4:
-        raise ValueError(f"Expected (T, C, Y, X), got shape {stack.shape}")
-    T, C, H, W = stack.shape
-
-    bf = stack[detect_frame, bf_channel]
-    detections = detect_id_blocks(
-        bf, template_sobel,
-        threshold=threshold,
-        gaussian_sigma=gaussian_sigma,
+    detections, M, raw_angle, (cx, cy) = _detect_and_rotate(
+        stack, template_sobel, bf_channel, detect_frame,
+        gaussian_sigma=gaussian_sigma, threshold=threshold,
     )
-    if not detections:
-        raise NoIDBlockDetected(
-            f"No ID block detected on (frame={detect_frame}, channel={bf_channel})."
-        )
-
-    M, raw_angle, (cx, cy) = compute_rotation(detections, (H, W))
+    _, _, H, W = stack.shape
 
     # Tilt clamp -- defends against bacteria-induced spurious tilts.
     cal_tilt = calibration.get("tilt", {})
@@ -820,17 +913,7 @@ def crop_with_calibration(
         detections, M, calibration["x_wall"], W,
     )
 
-    # Apply rotation + crop band to the full stack.
-    out = np.zeros((T, C, y1 - y0, x1 - x0), dtype=stack.dtype)
-    for t in range(T):
-        for c in range(C):
-            rot = cv2.warpAffine(
-                stack[t, c], M, (W, H),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=0,
-            )
-            out[t, c] = rot[y0:y1, x0:x1]
+    out = _apply_rotation_and_crop(stack, M, y0, y1, x0, x1)
 
     info = {
         "n_detections": len(detections),

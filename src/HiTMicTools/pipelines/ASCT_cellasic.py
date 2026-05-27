@@ -28,12 +28,13 @@ Config additions vs ASCT_scsegm:
         Override the default packaged ID-block template. None uses
         HiTMicTools.img_processing.cellasic.templates.id_block.png.
     cellasic_calibration_path: Optional[str] (default None)
-        Path to a calibration JSON with x_wall / y_wall / tilt sub-dicts
-        (see e015_CellAsic_Greta/data/cropped_line5/calibration.json for
-        format). If given, the crop uses fixed offsets from the
-        calibration (recommended for bacteria-heavy frames). If None,
-        per-frame wall detection is used (only reliable on clean / empty
-        frames).
+        Path to a calibration JSON with x_wall / y_wall / tilt sub-dicts.
+        If None (the common case), the pipeline uses the hardcoded
+        line-5 (B04A) default shipped with HiTMicTools -- see
+        `DEFAULT_LINE5_CALIBRATION` in
+        `HiTMicTools.img_processing.cellasic.crop`. Override only for
+        non-standard chambers or experimental tuning. The override JSON
+        must match the structure of `DEFAULT_LINE5_CALIBRATION`.
     cellasic_gaussian_sigma: float (default 2.0)
         Pre-Sobel smoothing applied to BF before template matching. Use
         2.0 on raw .nd2 BF (pillar speckle dominates the gradient); 0
@@ -63,10 +64,10 @@ from HiTMicTools.img_processing.array_ops import convert_image
 from HiTMicTools.img_processing.img_ops import measure_background_intensity
 from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels_by_frame
 from HiTMicTools.img_processing.cellasic import (
-    crop_to_target_line,
     crop_with_calibration,
     load_default_template,
     load_template,
+    load_default_calibration,
 )
 from HiTMicTools.img_processing.cellasic.crop import NoIDBlockDetected
 from HiTMicTools.utils import get_timestamps, remove_file_extension
@@ -217,17 +218,18 @@ class ASCT_cellasic(BasePipeline):
                 template_sobel = load_default_template(gaussian_sigma=sigma)
                 img_logger.info(f"  using packaged default ID-block template  (sigma={sigma})")
 
-            # Optional calibration JSON: tilt clamp + fixed Y/X offsets.
-            # Recommended for bacteria-heavy frames where per-frame wall
-            # detection is brittle.
+            # Calibration: tilt clamp + fixed Y/X offsets. The pipeline
+            # ships with a hardcoded line-5 (B04A) default; users only
+            # need to set `cellasic_calibration_path` in the config if
+            # they have a non-standard chamber or want to override.
             cal_path = getattr(self, "cellasic_calibration_path", None)
-            calibration = None
             if cal_path:
                 with open(cal_path) as f:
                     calibration = json.load(f)
                 img_logger.info(f"  using calibration: {cal_path}")
             else:
-                img_logger.info("  no calibration -- per-frame wall detection")
+                calibration = load_default_calibration()
+                img_logger.info("  using built-in default line-5 calibration")
 
             # ip.img has shape (T, S, C, dim2, dim3) with S=1 in this
             # pipeline. ASCT_scsegm's reshape uses (T, C, size_x, size_y)
@@ -242,26 +244,15 @@ class ASCT_cellasic(BasePipeline):
             stack_tcxy = ip.img[:, 0]  # (T, C, dim2, dim3)
 
             try:
-                if calibration is not None:
-                    cropped_tcxy, crop_info = crop_with_calibration(
-                        stack_tcxy,
-                        template_sobel,
-                        calibration,
-                        bf_channel=reference_channel,
-                        detect_frame=0,
-                        gaussian_sigma=sigma,
-                        threshold=ncc_thr,
-                    )
-                else:
-                    cropped_tcxy, crop_info = crop_to_target_line(
-                        stack_tcxy,
-                        template_sobel,
-                        bf_channel=reference_channel,
-                        detect_frame=0,
-                        gaussian_sigma=sigma,
-                        threshold=ncc_thr,
-                        crop_x_walls=False,
-                    )
+                cropped_tcxy, crop_info = crop_with_calibration(
+                    stack_tcxy,
+                    template_sobel,
+                    calibration,
+                    bf_channel=reference_channel,
+                    detect_frame=0,
+                    gaussian_sigma=sigma,
+                    threshold=ncc_thr,
+                )
             except NoIDBlockDetected as e:
                 img_logger.error(f"2.5 - target-line crop failed: {e}")
                 raise
