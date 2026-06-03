@@ -25,13 +25,19 @@ import pytest
 
 from HiTMicTools.img_processing.cellasic import (
     crop_to_target_line,
+    crop_with_calibration_per_frame,
     load_default_template,
+    DEFAULT_LINE5_CALIBRATION,
 )
+from HiTMicTools.img_processing.cellasic import crop as crop_mod
 from HiTMicTools.img_processing.cellasic.crop import (
     NoIDBlockDetected,
     _apply_sobel,
     _extrapolate_id_positions,
     detect_walls_in_rotated,
+    _interp_nan,
+    _moving_median,
+    _estimate_frame_drift,
 )
 
 
@@ -140,6 +146,117 @@ def test_no_id_block_raises():
     template = load_default_template(gaussian_sigma=2.0)
     with pytest.raises(NoIDBlockDetected):
         crop_to_target_line(blank, template)
+
+
+# =========================================================================
+#  Layer 1b -- per-frame drift-tracking crop (synthetic data)
+# =========================================================================
+
+def test_interp_nan_fills_and_clamps_ends():
+    """Interior NaNs are linearly interpolated; leading/trailing NaNs clamp
+    to the nearest valid value."""
+    a = np.array([np.nan, 1.0, np.nan, 3.0, np.nan])
+    out = _interp_nan(a)
+    assert out.tolist() == [1.0, 1.0, 2.0, 3.0, 3.0]
+    # All-NaN -> all zeros (no drift estimate available).
+    assert _interp_nan(np.array([np.nan, np.nan])).tolist() == [0.0, 0.0]
+
+
+def test_moving_median_rejects_single_spike():
+    """A one-frame spike in an otherwise flat trajectory is removed by the
+    moving median; window <= 1 is a no-op."""
+    a = np.array([0.0, 0.0, 50.0, 0.0, 0.0])
+    assert _moving_median(a, window=3).tolist() == [0.0, 0.0, 0.0, 0.0, 0.0]
+    assert _moving_median(a, window=1).tolist() == a.tolist()
+
+
+def test_estimate_frame_drift_matches_by_x_and_rejects_outliers():
+    """Median (dx, dy) of detections matched to nearest reference block by
+    X. A block beyond max_drift (no real counterpart) is dropped."""
+    ref = [(1000.0, 1400.0), (1500.0, 1400.0)]  # (x, y)
+    # both shifted by (+10 x, +6 y); plus a spurious block far away in x.
+    dets = [(1406, 1010, 0.9), (1406, 1510, 0.9), (1406, 5000, 0.9)]  # (cy, cx, s)
+    dx, dy = _estimate_frame_drift(dets, ref, max_drift=300.0)
+    assert dx == 10.0 and dy == 6.0
+    # No detections -> None (caller interpolates).
+    assert _estimate_frame_drift([], ref, max_drift=300.0) is None
+
+
+def _drift_fake_detect(spacing=500):
+    """Build a fake detect_id_blocks that locates a bright marker (argmax)
+    and returns 3 collinear ID blocks at +/- `spacing` around it. Returns []
+    on a flat (markerless) frame, simulating a detection failure."""
+    def fake(bf, template_sobel, threshold=0.25, gaussian_sigma=0.0, **kw):
+        if int(bf.max()) - int(bf.min()) < 50:
+            return []
+        my, mx = np.unravel_index(int(np.argmax(bf)), bf.shape)
+        return [
+            (int(my), int(mx - spacing), 0.9),
+            (int(my), int(mx), 0.95),
+            (int(my), int(mx + spacing), 0.9),
+        ]
+    return fake
+
+
+def test_per_frame_crop_tracks_drift_and_keeps_constant_shape(monkeypatch):
+    """End-to-end: a marker at the ID centre drifts +2px/frame in Y. The
+    per-frame crop must (a) keep a constant output shape and (b) land the
+    marker at the SAME row in every cropped frame, proving the box follows
+    the drift instead of using a stale frame-0 position. One markerless
+    frame exercises the interpolation fallback."""
+    T, C, H, W = 12, 2, 2700, 2720
+    bf_channel = 0
+    fail_frame = 6
+    cy0, cx0 = 1350, 1360
+    stack = np.full((T, C, H, W), 10, dtype=np.uint8)
+    centres = []
+    for t in range(T):
+        cy = cy0 + 2 * t
+        cx = cx0 + 1 * t
+        centres.append((cy, cx))
+        if t == fail_frame:
+            continue  # leave this frame flat -> detection failure
+        stack[t, bf_channel, cy - 5:cy + 6, cx - 5:cx + 6] = 255
+
+    monkeypatch.setattr(crop_mod, "detect_id_blocks", _drift_fake_detect())
+    template = np.zeros((40, 40), dtype=np.uint8)  # unused by the fake
+
+    out, info = crop_with_calibration_per_frame(
+        stack, template, DEFAULT_LINE5_CALIBRATION,
+        bf_channel=bf_channel, smooth_window=1,  # exact drift, no smoothing
+    )
+
+    # (a) constant output shape across all frames.
+    assert out.ndim == 4 and out.shape[0] == T and out.shape[1] == C
+    Hc, Wc = out.shape[2], out.shape[3]
+    assert (Hc, Wc) == (info["crop_height"], info["crop_width"])
+
+    # (b) marker lands at the same row in every DETECTED frame.
+    rows = []
+    for t in range(T):
+        if t == fail_frame:
+            continue
+        my, _ = np.unravel_index(int(np.argmax(out[t, bf_channel])), (Hc, Wc))
+        rows.append(my)
+    assert len(set(rows)) == 1, f"marker row drifted across frames: {rows}"
+
+    # Diagnostics: failure counted + interpolated, drift range as expected.
+    assert info["crop_mode"].startswith("per_frame_calibrated")
+    assert info["ref_frame"] == 0
+    assert info["n_frames"] == T
+    assert info["n_frames_detected"] == T - 1
+    assert info["n_frames_interpolated"] == 1
+    assert abs(info["drift_y_range_px"][1] - 2 * (T - 1)) < 1.0
+
+
+def test_per_frame_crop_all_frames_blank_raises(monkeypatch):
+    """If NO frame yields a detection, raise NoIDBlockDetected rather than
+    silently emitting a junk crop."""
+    monkeypatch.setattr(crop_mod, "detect_id_blocks", _drift_fake_detect())
+    stack = np.full((4, 1, 2700, 2720), 10, dtype=np.uint8)  # all flat
+    template = np.zeros((40, 40), dtype=np.uint8)
+    with pytest.raises(NoIDBlockDetected):
+        crop_with_calibration_per_frame(stack, template, DEFAULT_LINE5_CALIBRATION)
 
 
 # =========================================================================

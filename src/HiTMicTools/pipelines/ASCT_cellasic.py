@@ -8,10 +8,15 @@ restoration and before segmentation. The crop:
   2. Computes the small plate-placement tilt from a least-squares line
      through the detected centres.
   3. Rotates the (T, C, Y, X) stack so the target line becomes horizontal.
-  4. Detects the horizontal silicone walls bounding the line via
-     row-median projection and crops just inside them. The crop keeps the
-     full image width; left/right chamber-wall cropping is intentionally
-     disabled because it is brittle in dense CellAsic wells.
+  4. Derives the crop bounds from a chip-geometry calibration (fixed Y
+     offsets from the ID-block centre + min/max ID X for the chamber
+     walls), robust on bacteria-heavy frames where per-frame wall
+     detection fails.
+
+By default the detection runs on EVERY frame and a fixed-size crop box
+tracks the slow stage drift across the time-lapse, so line 5 stays
+centred from frame 0 to the last frame. Set `cellasic_per_frame_crop:
+False` to fall back to the legacy single-frame (frame-0) crop.
 
 Why this pipeline exists: the ASCT_scsegm pipeline runs on agarose-pad
 data where the FOV is one big homogeneous well. CellAsic FOVs contain
@@ -24,6 +29,10 @@ Config additions vs ASCT_scsegm:
     crop_to_target_line: bool (default True)
         Toggle the crop step. Set False to debug the rest of the
         pipeline without changing image dimensions.
+    cellasic_per_frame_crop: bool (default True)
+        Detect the ID block on every frame and track stage drift with a
+        fixed-size crop box. Set False to use the legacy single-frame
+        (frame-0) crop, which can misalign on late frames of long runs.
     line5_template_path: Optional[str] (default None)
         Override the default packaged ID-block template. None uses
         HiTMicTools.img_processing.cellasic.templates.id_block.png.
@@ -65,6 +74,7 @@ from HiTMicTools.img_processing.img_ops import measure_background_intensity
 from HiTMicTools.img_processing.mask_ops import map_predictions_to_labels_by_frame
 from HiTMicTools.img_processing.cellasic import (
     crop_with_calibration,
+    crop_with_calibration_per_frame,
     load_default_template,
     load_template,
     load_default_calibration,
@@ -243,16 +253,27 @@ class ASCT_cellasic(BasePipeline):
             # ID block centre lands far from the expected line-5 Y range.
             stack_tcxy = ip.img[:, 0]  # (T, C, dim2, dim3)
 
+            per_frame_crop = bool(getattr(self, "cellasic_per_frame_crop", True))
             try:
-                cropped_tcxy, crop_info = crop_with_calibration(
-                    stack_tcxy,
-                    template_sobel,
-                    calibration,
-                    bf_channel=reference_channel,
-                    detect_frame=0,
-                    gaussian_sigma=sigma,
-                    threshold=ncc_thr,
-                )
+                if per_frame_crop:
+                    cropped_tcxy, crop_info = crop_with_calibration_per_frame(
+                        stack_tcxy,
+                        template_sobel,
+                        calibration,
+                        bf_channel=reference_channel,
+                        gaussian_sigma=sigma,
+                        threshold=ncc_thr,
+                    )
+                else:
+                    cropped_tcxy, crop_info = crop_with_calibration(
+                        stack_tcxy,
+                        template_sobel,
+                        calibration,
+                        bf_channel=reference_channel,
+                        detect_frame=0,
+                        gaussian_sigma=sigma,
+                        threshold=ncc_thr,
+                    )
             except NoIDBlockDetected as e:
                 img_logger.error(f"2.5 - target-line crop failed: {e}")
                 raise
@@ -276,6 +297,15 @@ class ASCT_cellasic(BasePipeline):
                 f"crop Y=[{crop_info['crop_y0']},{crop_info['crop_y1']}] "
                 f"({crop_info['crop_height']}px)  mode={crop_info['crop_mode']}"
             )
+            if "max_abs_drift_px" in crop_info:
+                img_logger.info(
+                    f"  per-frame crop: tracked {crop_info['n_frames_detected']}/"
+                    f"{crop_info['n_frames']} frames "
+                    f"({crop_info['n_frames_interpolated']} interpolated), "
+                    f"max drift {crop_info['max_abs_drift_px']:.0f}px  "
+                    f"x-range={tuple(round(v) for v in crop_info['drift_x_range_px'])} "
+                    f"y-range={tuple(round(v) for v in crop_info['drift_y_range_px'])}"
+                )
 
             # Re-insert slice axis: (T, C, X, Y) -> (T, 1, C, X, Y)
             ip.img = cropped_tcxy[:, np.newaxis, :, :, :]
