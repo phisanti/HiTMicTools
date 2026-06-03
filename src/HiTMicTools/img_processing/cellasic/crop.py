@@ -931,3 +931,262 @@ def crop_with_calibration(
     if was_clamped:
         info["_angle_clamped_from"] = raw_angle
     return out, info
+
+
+# =========================================================================
+#  Per-frame calibration mode (production, drift-tracking)
+# =========================================================================
+# crop_with_calibration detects the ID block on ONE frame and applies the
+# resulting rotation + crop box to every frame. Over a long time-lapse the
+# stage drifts, so a frame-0 crop slowly misaligns on late frames (line 5
+# creeps out of the band). crop_with_calibration_per_frame fixes this by
+# detecting the ID block on EVERY frame and translating a fixed-size crop
+# box to follow the drift. The crop SIZE and the X-wall classification are
+# fixed once from a reference frame; only the crop POSITION tracks. Tilt is
+# measured once (median over all frames, clamped) and reused, since chip
+# tilt is mechanically fixed and per-frame 2-point line fits amplify Y noise
+# into spurious tilt.
+
+
+def _moving_median(values: np.ndarray, window: int) -> np.ndarray:
+    """Centered moving median over a 1D sequence. window <= 1 is a no-op."""
+    n = len(values)
+    v = np.asarray(values, dtype=float)
+    if window <= 1 or n == 0:
+        return v
+    half = window // 2
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        out[i] = float(np.median(v[lo:hi]))
+    return out
+
+
+def _interp_nan(values: np.ndarray) -> np.ndarray:
+    """Linear-interpolate NaNs from valid neighbours; clamp the ends to the
+    nearest valid value. All-NaN input returns all zeros (no drift)."""
+    a = np.asarray(values, dtype=float).copy()
+    good = ~np.isnan(a)
+    if not good.any():
+        return np.zeros_like(a)
+    if good.all():
+        return a
+    idx = np.arange(len(a))
+    a[~good] = np.interp(idx[~good], idx[good], a[good])
+    return a
+
+
+def _estimate_frame_drift(
+    frame_dets: List[Tuple[int, int, float]],
+    ref_centres_xy: List[Tuple[float, float]],
+    max_drift: float,
+) -> Optional[Tuple[float, float]]:
+    """Median (dx, dy) translation of a frame's ID-block detections relative
+    to the reference frame's detections.
+
+    Each detection is matched to the nearest reference block by X (all line-5
+    blocks share Y, so X discriminates). Per-pair shifts larger than
+    `max_drift` on either axis are dropped as mismatches (e.g. a block that
+    drifted into the FOV with no reference counterpart). Returns None if no
+    pair survives -- the caller interpolates those frames from neighbours.
+    """
+    if not frame_dets or not ref_centres_xy:
+        return None
+    shifts: List[Tuple[float, float]] = []
+    for (cy, cx, _) in frame_dets:
+        rx, ry = min(ref_centres_xy, key=lambda r: abs(r[0] - cx))
+        dx = cx - rx
+        dy = cy - ry
+        if abs(dx) <= max_drift and abs(dy) <= max_drift:
+            shifts.append((dx, dy))
+    if not shifts:
+        return None
+    arr = np.asarray(shifts, dtype=float)
+    return float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))
+
+
+def _apply_per_frame_rotation_and_crop(
+    stack: np.ndarray,
+    per_frame_M: List[np.ndarray],
+    per_frame_box: List[Tuple[int, int, int, int]],
+) -> np.ndarray:
+    """Apply a per-frame affine + crop. Every box MUST share the same
+    (height, width); only the position varies, so the output stack is
+    rectangular. Returns (T, C, Hc, Wc) with the input dtype."""
+    T, C, H, W = stack.shape
+    y0, y1, x0, x1 = per_frame_box[0]
+    Hc, Wc = y1 - y0, x1 - x0
+    out = np.zeros((T, C, Hc, Wc), dtype=stack.dtype)
+    for t in range(T):
+        M = per_frame_M[t]
+        y0, y1, x0, x1 = per_frame_box[t]
+        for c in range(C):
+            rot = cv2.warpAffine(
+                stack[t, c], M, (W, H),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            out[t, c] = rot[y0:y1, x0:x1]
+    return out
+
+
+def crop_with_calibration_per_frame(
+    stack: np.ndarray,
+    template_sobel: np.ndarray,
+    calibration: dict,
+    bf_channel: int = 0,
+    gaussian_sigma: float = 0.0,
+    threshold: float = DEFAULT_THRESHOLD,
+    smooth_window: int = 7,
+    max_drift_px: float = 300.0,
+) -> Tuple[np.ndarray, dict]:
+    """Drift-tracking variant of `crop_with_calibration`.
+
+    Detects the ID block on EVERY frame and translates a fixed-size crop box
+    to follow the line across the time-lapse, correcting the slow stage drift
+    that a single frame-0 crop cannot. The crop SIZE and the X-wall
+    classification are fixed once from a reference frame (frame 0 if it has a
+    detection, else the first frame that does); only the crop POSITION tracks
+    per frame.
+
+    Tilt is the median of the per-frame line fits (frames with >=2
+    detections), clamped to the calibration bound -- one noisy frame cannot
+    swing it (2-point fits amplify Y noise into spurious tilt). Frames where
+    detection fails fall back to the temporally interpolated + smoothed
+    drift, so a few bacteria-obscured frames do not break the crop.
+
+    Args:
+        stack: (T, C, Y, X) array.
+        template_sobel: Sobel-preprocessed ID-block template.
+        calibration: dict with `x_wall`, `y_wall`, `tilt` sub-dicts (same
+            format consumed by `crop_with_calibration`).
+        bf_channel: brightfield channel index used for detection.
+        gaussian_sigma: pre-Sobel smoothing (2.0 on raw .nd2 BF, 0 post-NAFNet).
+        threshold: NCC score floor for detections.
+        smooth_window: frames in the centered moving-median smoothing of the
+            drift trajectory. <= 1 disables smoothing.
+        max_drift_px: per-axis cap on a matched detection's shift relative to
+            the reference; larger shifts are treated as mismatches.
+
+    Returns:
+        (cropped_stack, info). cropped_stack is (T, C, Hc, Wc), constant size
+        across frames. info mirrors `crop_with_calibration`'s keys (taken on
+        the reference frame) plus per-frame drift diagnostics.
+
+    Raises:
+        ValueError: stack is not (T, C, Y, X).
+        NoIDBlockDetected: if NO frame yields an ID-block detection.
+    """
+    if stack.ndim != 4:
+        raise ValueError(f"Expected (T, C, Y, X), got shape {stack.shape}")
+    T, C, H, W = stack.shape
+
+    # 1. Detect ID blocks on every frame; reduce each to a robust centre.
+    per_frame_dets: List[List[Tuple[int, int, float]]] = []
+    per_frame_centre: List[Optional[Tuple[float, float]]] = []
+    for t in range(T):
+        dets = detect_id_blocks(
+            stack[t, bf_channel], template_sobel,
+            threshold=threshold, gaussian_sigma=gaussian_sigma,
+        )
+        per_frame_dets.append(dets)
+        if dets:
+            cxs = [cx for (_, cx, _) in dets]
+            cys = [cy for (cy, _, _) in dets]
+            per_frame_centre.append(
+                (float(np.median(cxs)), float(np.median(cys)))
+            )
+        else:
+            per_frame_centre.append(None)
+
+    n_detected = sum(1 for d in per_frame_dets if d)
+    if n_detected == 0:
+        raise NoIDBlockDetected(
+            f"No ID block detected on ANY of {T} frames (channel={bf_channel}). "
+            f"Cannot locate target line; check FOV and template."
+        )
+
+    # 2. Reference frame: frame 0 if it detected, else the first that did.
+    ref_idx = 0 if per_frame_dets[0] else next(
+        i for i, d in enumerate(per_frame_dets) if d
+    )
+    ref_dets = per_frame_dets[ref_idx]
+    cx_ref, cy_ref = per_frame_centre[ref_idx]
+    ref_centres_xy = [(float(cx), float(cy)) for (cy, cx, _) in ref_dets]
+
+    # 3. Global tilt: median over per-frame line fits, then clamp.
+    angles: List[float] = []
+    for dets in per_frame_dets:
+        if len(dets) >= 2:
+            centres = np.array(
+                [(cx, cy) for (cy, cx, _) in dets], dtype=np.float64
+            )
+            slope, _ = _fit_line(centres)
+            angles.append(float(np.degrees(np.arctan(slope))))
+    raw_angle = float(np.median(angles)) if angles else 0.0
+    max_abs = float(calibration.get("tilt", {}).get("max_abs_angle_deg", 1.0))
+    angle, was_clamped = clamp_tilt(raw_angle, max_abs)
+
+    # 4. Reference crop box -- fixes the crop SIZE + X classification.
+    M_ref = cv2.getRotationMatrix2D((cx_ref, cy_ref), angle, 1.0)
+    y0_ref, y1_ref = apply_y_calibration(cy_ref, calibration["y_wall"], H)
+    x0_ref, x1_ref, classification = apply_x_calibration_minmax(
+        ref_dets, M_ref, calibration["x_wall"], W,
+    )
+    Hc, Wc = y1_ref - y0_ref, x1_ref - x0_ref
+
+    # 5. Per-frame drift relative to the reference detections, then fill
+    #    failed frames by interpolation and smooth the trajectory.
+    drift = [
+        _estimate_frame_drift(per_frame_dets[t], ref_centres_xy, max_drift_px)
+        for t in range(T)
+    ]
+    drift[ref_idx] = (0.0, 0.0)  # reference defines the origin
+    n_failed = sum(1 for d in drift if d is None)
+    dx = _interp_nan(
+        np.array([d[0] if d is not None else np.nan for d in drift])
+    )
+    dy = _interp_nan(
+        np.array([d[1] if d is not None else np.nan for d in drift])
+    )
+    dx = _moving_median(dx, smooth_window)
+    dy = _moving_median(dy, smooth_window)
+
+    # 6. Build the per-frame affine + crop box (constant size, tracked pos).
+    per_frame_M: List[np.ndarray] = []
+    per_frame_box: List[Tuple[int, int, int, int]] = []
+    for t in range(T):
+        cx_t = cx_ref + dx[t]
+        cy_t = cy_ref + dy[t]
+        per_frame_M.append(cv2.getRotationMatrix2D((cx_t, cy_t), angle, 1.0))
+        y0 = min(max(0, int(round(y0_ref + dy[t]))), H - Hc)
+        x0 = min(max(0, int(round(x0_ref + dx[t]))), W - Wc)
+        per_frame_box.append((y0, y0 + Hc, x0, x0 + Wc))
+
+    out = _apply_per_frame_rotation_and_crop(stack, per_frame_M, per_frame_box)
+
+    info = {
+        "n_detections": len(ref_dets),
+        "detections": ref_dets,
+        "angle_deg": angle,
+        "centre_xy": (cx_ref, cy_ref),
+        "crop_y0": y0_ref,
+        "crop_y1": y1_ref,
+        "crop_x0": x0_ref,
+        "crop_x1": x1_ref,
+        "crop_height": Hc,
+        "crop_width": Wc,
+        "crop_mode": f"per_frame_calibrated_{classification}",
+        "ref_frame": ref_idx,
+        "n_frames": T,
+        "n_frames_detected": n_detected,
+        "n_frames_interpolated": n_failed,
+        "drift_x_range_px": (float(dx.min()), float(dx.max())),
+        "drift_y_range_px": (float(dy.min()), float(dy.max())),
+        "max_abs_drift_px": float(max(np.abs(dx).max(), np.abs(dy).max())),
+    }
+    if was_clamped:
+        info["_angle_clamped_from"] = raw_angle
+    return out, info
