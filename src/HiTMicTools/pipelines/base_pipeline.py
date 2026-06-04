@@ -8,13 +8,14 @@ import yaml
 import logging
 import subprocess
 import re
+import shutil
 
 # Resources imports
 import concurrent.futures
 import gc
 import multiprocessing
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 # Type annotations and
 from typing import List, Dict, Optional, Any
@@ -112,6 +113,44 @@ def get_hitmictools_provenance() -> Dict[str, str]:
         "source_path": source_path,
         "git_commit": _get_hitmictools_git_commit(source_path),
     }
+
+
+def _safe_zip_target_path(member_name: str, target_dir: str) -> Path:
+    """Return a validated extraction target for a ZIP member."""
+    normalized_name = member_name.replace("\\", "/")
+    posix_path = PurePosixPath(normalized_name)
+    windows_path = PureWindowsPath(member_name)
+
+    if (
+        not normalized_name
+        or posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or any(part == ".." for part in posix_path.parts)
+    ):
+        raise ValueError(f"Unsafe path in model bundle: {member_name}")
+
+    target_root = Path(target_dir).resolve()
+    target_path = (target_root / Path(*posix_path.parts)).resolve()
+    try:
+        target_path.relative_to(target_root)
+    except ValueError as exc:
+        raise ValueError(f"Unsafe path in model bundle: {member_name}") from exc
+
+    return target_path
+
+
+def _safe_extract_zip(zip_file: zipfile.ZipFile, target_dir: str) -> None:
+    """Extract a ZIP file after rejecting paths outside target_dir."""
+    for member in zip_file.infolist():
+        target_path = _safe_zip_target_path(member.filename, target_dir)
+        if member.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with zip_file.open(member) as source, open(target_path, "wb") as target:
+            shutil.copyfileobj(source, target)
 
 
 class BasePipeline(ABC):
@@ -213,18 +252,20 @@ class BasePipeline(ABC):
     def log_runtime_provenance(self) -> None:
         """Log enough package provenance to debug stale installs."""
         provenance = get_hitmictools_provenance()
+        debug_provenance = bool(getattr(self, "debug_provenance", False))
         self.main_logger.info(
             f"Running hitmictools version {provenance['version']}"
         )
         self.main_logger.info(
-            f"HiTMicTools source pyproject version: {provenance['source_version']}"
-        )
-        self.main_logger.info(
-            f"HiTMicTools source path: {provenance['source_path']}"
-        )
-        self.main_logger.info(
             f"HiTMicTools git commit: {provenance['git_commit']}"
         )
+        if debug_provenance:
+            self.main_logger.info(
+                f"HiTMicTools source pyproject version: {provenance['source_version']}"
+            )
+            self.main_logger.info(
+                f"HiTMicTools source path: {provenance['source_path']}"
+            )
 
     def load_model_fromdict(self, model_type: str, config_dic: Dict[str, Any]) -> None:
         """
@@ -385,7 +426,7 @@ class BasePipeline(ABC):
                         )
 
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    bundle_zip.extractall(temp_dir)
+                    _safe_extract_zip(bundle_zip, temp_dir)
 
                     # Load the main configuration file
                     config_path = os.path.join(temp_dir, "config.yml")
@@ -543,6 +584,8 @@ class BasePipeline(ABC):
                 - compile_models (str or False, optional): Torch compile mode.
                     Options: "default", "reduce-overhead", "max-autotune", or False.
                     Defaults to "max-autotune".
+                - debug_provenance (bool, optional): If True, include local source
+                    and interpreter paths in analysis logs. Defaults to False.
 
         Raises:
             ValueError: If required keys are missing or have invalid types
@@ -682,7 +725,9 @@ class BasePipeline(ABC):
         self.main_logger.info(f"Output folder: {self.output_path}")
         self.main_logger.info(f"Files pattern: {files_pattern}")
         self.main_logger.info(f"File type: {self.file_type}")
-        self.main_logger.info(get_system_info())
+        self.main_logger.info(
+            get_system_info(include_paths=bool(getattr(self, "debug_provenance", False)))
+        )
 
         file_list = self.get_files(
             self.input_path,
@@ -771,7 +816,9 @@ class BasePipeline(ABC):
         self.main_logger.info(f"Output folder: {self.output_path}")
         self.main_logger.info(f"Files pattern: {files_pattern}")
         self.main_logger.info(f"File type: {self.file_type}")
-        self.main_logger.info(get_system_info())
+        self.main_logger.info(
+            get_system_info(include_paths=bool(getattr(self, "debug_provenance", False)))
+        )
         self.main_logger.info(
             f"{len(file_list)} files found with extension {self.file_type}"
         )

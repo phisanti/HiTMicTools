@@ -2,22 +2,20 @@
 
 Two layers:
 
-1. Unit tests on the new Session-8 primitives -- Gaussian-sigma Sobel,
+1. Unit tests on the crop primitives -- Gaussian-sigma Sobel,
    ID-position extrapolation, the bottom-wall picker variants, and the
-   NoIDBlockDetected hard-fail. Run on synthetic data so they don't need
-   the e015 dataset.
+   NoIDBlockDetected hard-fail. Run on synthetic data so they do not need
+   private validation data.
 
-2. Ground-truth lock-in: parametrized over the 28 empty-reference .nd2
-   files (local) and 28 experimental .nd2 files (RINFsci). Asserts the
-   runtime pipeline reproduces the `*_crop_info.json` records that
-   Sergio visually approved at the end of Session 8. If anything in the
-   detect / rotate / wall-pick / calibration-apply chain regresses, the
-   matching test fails for the affected file(s).
+2. Optional validation lock-in tests over local microscopy files and
+   recorded crop metadata. These run only when the required environment
+   variables point to local validation assets.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -42,19 +40,33 @@ from HiTMicTools.img_processing.cellasic.crop import (
 
 
 # =========================================================================
-#  Paths
+#  Optional local validation paths
 # =========================================================================
 
-E015_ROOT = Path(r"C:/Users/sergi/ExperimentsWindows/e015_CellAsic_Greta")
+VALIDATION_ROOT_ENV = "HITMICTOOLS_CELLASIC_VALIDATION_ROOT"
+EXPERIMENTAL_ND2_DIR_ENV = "HITMICTOOLS_CELLASIC_EXPERIMENTAL_ND2_DIR"
 
-CROPPED_LINE5 = E015_ROOT / "data" / "cropped_line5"
-EMPTY_REF_DIR = CROPPED_LINE5 / "empty_reference"
-EMPTY_REF_JSON_DIR = EMPTY_REF_DIR / "diagnostics"
-EXPERIMENTAL_ND2_DIR = Path(r"Y:/Sergio/projects/e015_CellAsic_Greta/Data/Points_line5")
-EXPERIMENTAL_JSON_DIR = CROPPED_LINE5 / "experimental"
-CALIBRATION_JSON = CROPPED_LINE5 / "calibration.json"
+VALIDATION_ROOT = os.environ.get(VALIDATION_ROOT_ENV)
+EXPERIMENTAL_ND2_ROOT = os.environ.get(EXPERIMENTAL_ND2_DIR_ENV)
 
-CROP_SCRIPT_PATH = E015_ROOT / "scripts" / "crop_nd2_with_diagnostic.py"
+CELLASIC_VALIDATION_ROOT = Path(VALIDATION_ROOT) if VALIDATION_ROOT else None
+CROPPED_LINE5 = (
+    CELLASIC_VALIDATION_ROOT / "data" / "cropped_line5"
+    if CELLASIC_VALIDATION_ROOT
+    else None
+)
+EMPTY_REF_DIR = CROPPED_LINE5 / "empty_reference" if CROPPED_LINE5 else None
+EMPTY_REF_JSON_DIR = EMPTY_REF_DIR / "diagnostics" if EMPTY_REF_DIR else None
+EXPERIMENTAL_ND2_DIR = (
+    Path(EXPERIMENTAL_ND2_ROOT) if EXPERIMENTAL_ND2_ROOT else None
+)
+EXPERIMENTAL_JSON_DIR = CROPPED_LINE5 / "experimental" if CROPPED_LINE5 else None
+CALIBRATION_JSON = CROPPED_LINE5 / "calibration.json" if CROPPED_LINE5 else None
+CROP_SCRIPT_PATH = (
+    CELLASIC_VALIDATION_ROOT / "scripts" / "crop_nd2_with_diagnostic.py"
+    if CELLASIC_VALIDATION_ROOT
+    else None
+)
 
 
 # =========================================================================
@@ -264,8 +276,7 @@ def test_per_frame_crop_all_frames_blank_raises(monkeypatch):
 # =========================================================================
 
 def _load_nd2(path: Path) -> np.ndarray:
-    """Read an .nd2 into a (T, C, Y, X) array. Avoids importing the e015
-    script just for this helper."""
+    """Read an .nd2 into a (T, C, Y, X) array."""
     import nd2
     with nd2.ND2File(str(path)) as r:
         arr = r.asarray()
@@ -282,8 +293,10 @@ def crop_script():
     can exercise the production orchestration (tilt clamp + calibrated
     Y + min/max X). Skips the layer-2 tests if the file is not present.
     """
+    if CROP_SCRIPT_PATH is None:
+        pytest.skip(f"{VALIDATION_ROOT_ENV} is not set")
     if not CROP_SCRIPT_PATH.exists():
-        pytest.skip(f"crop_nd2_with_diagnostic.py not found at {CROP_SCRIPT_PATH}")
+        pytest.skip("crop_nd2_with_diagnostic.py not found in validation assets")
     spec = importlib.util.spec_from_file_location(
         "crop_script_under_test", CROP_SCRIPT_PATH,
     )
@@ -294,13 +307,17 @@ def crop_script():
 
 @pytest.fixture(scope="session")
 def calibration():
+    if CALIBRATION_JSON is None:
+        pytest.skip(f"{VALIDATION_ROOT_ENV} is not set")
     if not CALIBRATION_JSON.exists():
-        pytest.skip(f"calibration.json not found at {CALIBRATION_JSON}")
+        pytest.skip("calibration.json not found in validation assets")
     return json.loads(CALIBRATION_JSON.read_text())
 
 
 def _ground_truth_pairs(nd2_dir: Path, json_dir: Path):
     """Return list of (nd2_path, recorded_record) for files where both exist."""
+    if nd2_dir is None or json_dir is None:
+        return []
     if not nd2_dir.exists() or not json_dir.exists():
         return []
     pairs = []
@@ -337,7 +354,7 @@ def _assert_record_matches(record: dict, expected: dict, atol_angle: float = 0.0
     "nd2_path,expected", EMPTY_PAIRS, ids=[p[0].name for p in EMPTY_PAIRS],
 )
 def test_empty_ref_walls_y_lock(nd2_path: Path, expected: dict):
-    """Lock the per-frame walls-Y + tilt + ID-detection on all 28 empty
+    """Lock the per-frame walls-Y + tilt + ID-detection on validation
     references. These measurements ARE what built the calibration JSON,
     so any drift in detect / rotate / wall-pick code will surface here.
 
@@ -382,9 +399,7 @@ def test_experimental_calibration_lock(
     nd2_path: Path, expected: dict, crop_script, calibration, tmp_path,
 ):
     """Lock the full production pipeline (tilt clamp + calibrated Y +
-    min/max X with n_det=1 fallback) on all 28 experimental .nd2 files.
-    The recorded JSONs encode Sergio's visually approved crops from the
-    end of Session 8; any pipeline regression flips the matching test."""
+    min/max X with n_det=1 fallback) against optional validation records."""
     template = crop_script.load_default_template(gaussian_sigma=2.0)
     record = crop_script.process_detect(
         nd2_path, tmp_path, template,

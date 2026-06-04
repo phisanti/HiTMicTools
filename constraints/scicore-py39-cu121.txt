@@ -1,4 +1,4 @@
-# Known-good Scicore environment for HiTMicTools 0.5.12.
+# Known-good Scicore environment for HiTMicTools 0.5.13.
 # Use with Python 3.9 and a CUDA 12.1 PyTorch install source, for example:
 #   pip install --extra-index-url https://download.pytorch.org/whl/cu121 -c constraints/scicore-py39-cu121.txt .
 

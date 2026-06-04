@@ -245,9 +245,8 @@ class ASCT_cellasic(BasePipeline):
             # pipeline. ASCT_scsegm's reshape uses (T, C, size_x, size_y)
             # but the standalone validation (which read the transformed.tiff
             # output) found ID blocks correctly assuming standard image
-            # convention (rows=dim2, cols=dim3). The CellAsic chambers in
-            # the e015 minitest are near-square (2714-2720 px on either
-            # side) so the distinction is invisible in practice. If a
+            # convention (rows=dim2, cols=dim3). The validation chambers are
+            # near-square, so the distinction is invisible in practice. If a
             # future acquisition is strongly non-square AND the order is
             # actually (X, Y) here, the assertion below will trip when the
             # ID block centre lands far from the expected line-5 Y range.
