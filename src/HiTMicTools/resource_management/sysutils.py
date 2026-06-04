@@ -104,7 +104,7 @@ def get_memory_usage(
 
     return f"{memory_value:.2f} {unit}" if as_string else memory_value
 
-def get_system_info() -> str:
+def get_system_info(include_paths: bool = False) -> str:
     """
     Get detailed system information including CPU, memory, disk, and GPU usage (without GPUtil).
 
@@ -118,7 +118,9 @@ def get_system_info() -> str:
     cpu_model = platform.processor()
     info = "System Information:\n"
     info += f"OS: {platform.system()} {platform.release()}\n"
-    info += f"Python: {platform.python_version()} ({sys.executable})\n"
+    info += f"Python: {platform.python_version()}\n"
+    if include_paths:
+        info += f"Python executable: {sys.executable}\n"
     info += f"CPU Model: {cpu_model}\n"
     info += f"CPU Cores: {os.cpu_count()}\n"
     info += f"CPU Usage: {cpu_percent}%\n"

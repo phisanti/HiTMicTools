@@ -33,8 +33,8 @@ Two cropping modes share that detection + rotation prologue:
      dense cultures; the intended use is generating the calibration JSON
      from empty references, NOT production cropping.
 
-Tunables are exposed as module constants; defaults were calibrated on
-the e015 dataset (28 empty refs + 28 experimental FOVs across 4 chambers).
+Tunables are exposed as module constants; defaults are calibrated for
+standard line-5 acquisitions on the supported chamber geometry.
 """
 from __future__ import annotations
 
@@ -77,8 +77,8 @@ WALL_LOCAL_HALFSPAN = 80       # px on each side used to score local wall dips.
 
 # --- crop tightness ----------------------------------------------------------
 # Insets push the top/bottom crop edge INSIDE line 5 by N px (positive
-# values exclude the silicone wall itself). Values approved on the e015
-# minitest after visual inspection.
+# values exclude the silicone wall itself). Values were selected from
+# local validation data after visual inspection.
 
 WALL_INSET_TOP = 30
 WALL_INSET_BOT = 20
@@ -99,17 +99,15 @@ CROP_OFFSET_BELOW = 754
 # pipeline runs out of the box for any standard line-5 acquisition on the
 # B04A chip without users needing to manage a sidecar file.
 #
-# Source: median over 28 empty-reference frames acquired by Greta on
-# 2026-05-20 (p01-p04 of an empty B04A plate). See
-# e015_CellAsic_Greta/data/cropped_line5/calibration.json for the full
-# annotated version (same numbers + provenance notes).
+# Source: median calibration from clean empty-reference frames on the
+# supported chamber geometry.
 #
 # To use a different calibration (new chamber design, new imaging setup),
 # pass `cellasic_calibration_path: /path/to/your.json` in the pipeline
 # config -- the user override takes precedence over this default.
 
 DEFAULT_LINE5_CALIBRATION = {
-    "_source": "e015 empty refs (28 frames, B04A line 5, 2026-05-20)",
+    "_source": "built-in B04A line-5 calibration",
     "x_wall": {
         "_format_version": "min_max_v1",
         "left_wall": {
@@ -756,8 +754,8 @@ def crop_to_target_line(
 # =========================================================================
 #  Calibration mode entry point (production)
 # =========================================================================
-# These helpers consume the unified calibration JSON produced by the e015
-# calibration pipeline (see data/cropped_line5/calibration.json for format).
+# These helpers consume the unified calibration JSON used by the
+# calibration pipeline.
 # They exist because per-frame wall + X detection is brittle on bacteria-
 # heavy frames; a calibration derived from clean empty references is more
 # reliable.
