@@ -89,6 +89,21 @@ class ASCT_scsegm(BasePipeline):
             f"Image shape: {img.shape}, pixel size: {pixel_size} µm. Reshaped to (frames={nFrames}, channels={nChannels}, slices={nSlices}, x={size_x}, y={size_y})"
         )
         img = img.reshape(nFrames, nChannels, size_x, size_y)
+
+        # Single-frame snapshots break several timelapse-only code paths (BaSiC
+        # baseline, segmenter single-frame squeeze, per-frame iteration). Treat a
+        # lone frame as a degenerate 2-frame timelapse: duplicate it and run the
+        # standard multi-frame path. Frame 1 is dropped immediately after
+        # segmentation, so downstream analysis sees the original single frame.
+        duplicated_single_frame = nFrames == 1
+        if duplicated_single_frame:
+            img = np.repeat(img, 2, axis=0)
+            nFrames = 2
+            img_logger.info(
+                "Single frame detected -- duplicated to a 2-frame stack "
+                "(timelapse-equivalent); frame 1 dropped before output"
+            )
+
         # Subsetting for developing, testing and debugging
         # nFrames = min(nFrames, 3)
         # img = img[:nFrames]
@@ -185,6 +200,14 @@ class ASCT_scsegm(BasePipeline):
                 normalize_to_255=False,
                 output_shape="HW",
             )
+
+        if duplicated_single_frame:
+            ip.img = ip.img[:1]
+            stacked_labeled_masks = stacked_labeled_masks[:1]
+            all_bboxes = all_bboxes[:1]
+            all_class_ids = all_class_ids[:1]
+            all_scores = all_scores[:1]
+            nFrames = 1
 
         img_logger.info("3 - Instance segmentation completed", show_memory=True, cuda=is_cuda)
 
