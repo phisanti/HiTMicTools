@@ -272,6 +272,15 @@ class ImagePreprocessor:
         else:
             is_timelapse = False
 
+        # A single-frame stack breaks BaSiC timelapse baseline estimation (the
+        # baseline collapses to a 0-d array and indexing raises). Duplicate the
+        # lone frame so the timelapse math runs, then keep only the first
+        # corrected frame -- preserves baseline subtraction and matches the
+        # multi-frame correction exactly.
+        single_frame = is_timelapse and img_to_transform.shape[0] == 1
+        if single_frame:
+            img_to_transform = np.repeat(img_to_transform, 2, axis=0)
+
         basic = BaSiC(**kwargs)
         basic.fit(img_to_transform)
 
@@ -280,6 +289,9 @@ class ImagePreprocessor:
             images_transformed = basic.transform(img_to_transform, is_timelapse=is_timelapse)
         else:
             images_transformed = basic.transform(img_to_transform, timelapse=is_timelapse)
+
+        if single_frame:
+            images_transformed = images_transformed[:1]
 
         self.img[nframes, nslices, nchannels] = images_transformed
 
